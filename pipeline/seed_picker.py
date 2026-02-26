@@ -478,9 +478,59 @@ class SeedPicker:
 # ─────────────────────────────────────────────
 
 def main():
+    epilog = """
+HOW TO USE
+----------
+This tool opens a 3-panel MPR viewer (Axial / Coronal / Sagittal) for each patient.
+You identify the start and course of each coronary artery by clicking directly on
+the vessel lumen.
+
+STEP-BY-STEP
+  1. The window opens showing a mid-volume axial slice.
+     Scroll the mouse wheel over any panel to navigate through slices.
+
+  2. Locate the LEFT MAIN / LAD ostium (origin of the LAD off the left coronary sinus).
+     Press 1 to select LAD, then CLICK on the ostium in the axial or coronal view.
+     This sets the orange square marker -- the pipeline starts tracking here.
+
+  3. Continue clicking 3-5 waypoints along the proximal 40 mm of the LAD
+     (scroll down through slices, click where you see the vessel centre).
+     Waypoints guide the centerline extraction -- more = more accurate.
+
+  4. Press 2 to switch to LCX. Repeat the same process:
+     click the LCX ostium (off the left main, turning posteriorly), then add waypoints
+     along the proximal 40 mm.
+
+  5. Press 3 to switch to RCA. Click the RCA ostium (right coronary sinus),
+     then add waypoints covering at least the 10-50 mm proximal segment.
+
+  6. Press S to save the seed file.  All three vessels are written to the JSON.
+     The pipeline uses these coordinates to extract centerlines and build the PCAT VOI.
+
+KEYBOARD SHORTCUTS
+  1 / 2 / 3   Switch active vessel (LAD / LCX / RCA)
+  u           Undo last point (waypoints first, then ostium)
+  r           Reset all points for the current vessel
+  s           Save seeds to JSON and continue
+  q           Quit without saving
+  w / W       Window width wider / narrower  (adjust contrast)
+  l / L       Window level brighter / darker (adjust brightness)
+
+TIPS
+  - Seed in soft-tissue window (W=600 L=50 -- the default).  The vessel lumen
+    appears dark (near 0 HU); aim for the centre of the dark tube.
+  - Use the coronal view to quickly find the ostia -- the aortic root is visible
+    as a bright ring at the top of the heart.
+  - You only need the OSTIUM and a few WAYPOINTS per vessel.
+    The centerline algorithm fills in the rest automatically.
+  - If you make a mistake, press u to undo or r to start the vessel over.
+  - Markers are colour-coded: LAD=orange, LCX=blue, RCA=green.
+    Square = ostium, circle = waypoint.
+"""
     parser = argparse.ArgumentParser(
         description="Interactive seed point picker for PCAT pipeline",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=epilog,
     )
     parser.add_argument(
         "--dicom", required=True,

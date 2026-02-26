@@ -150,7 +150,7 @@ def test_paint_add_sets_voxels(tmp_path):
         spacing_mm=[1.0, 1.0, 1.0], vessel_name="LAD",
         output_path=tmp_path / "out.npy",
     )
-    editor.paint_mode = "add"
+    editor.mode = "paint"
     editor.brush_radius = 1
     editor._paint_voxels(10, 16, 16)
     assert editor.voi_mask[10, 16, 16] is np.bool_(True)
@@ -167,7 +167,7 @@ def test_paint_remove_clears_voxels(tmp_path):
         spacing_mm=[1.0, 1.0, 1.0], vessel_name="LAD",
         output_path=tmp_path / "out.npy",
     )
-    editor.paint_mode = "remove"
+    editor.mode = "erase"
     editor.brush_radius = 0
     editor._paint_voxels(10, 16, 16)
     assert editor.voi_mask[10, 16, 16] is np.bool_(False)
@@ -183,7 +183,7 @@ def test_paint_brush_radius_respected(tmp_path):
         spacing_mm=[1.0, 1.0, 1.0], vessel_name="LAD",
         output_path=tmp_path / "out.npy",
     )
-    editor.paint_mode = "add"
+    editor.mode = "paint"
     editor.brush_radius = 0
     editor._paint_voxels(5, 8, 8)
     assert editor.voi_mask[5, 8, 8] is np.bool_(True)
@@ -205,8 +205,8 @@ def test_undo_restores_previous_state(tmp_path):
         output_path=tmp_path / "out.npy",
     )
     original = editor.voi_mask.copy()
-    editor._save_to_undo_stack()
-    editor.paint_mode = "add"
+    editor._save_undo()
+    editor.mode = "paint"
     editor.brush_radius = 2
     editor._paint_voxels(10, 16, 16)
     assert editor.voi_mask.sum() > 0          # paint happened
@@ -216,7 +216,7 @@ def test_undo_restores_previous_state(tmp_path):
 
 
 def test_undo_stack_max_depth(tmp_path):
-    """Undo stack should cap at 20 states (deque maxlen)."""
+    """Undo stack should cap at 30 states (deque maxlen)."""
     volume = np.zeros((10, 20, 20), dtype=np.float32)
     voi_mask = np.zeros(volume.shape, dtype=bool)
     editor = VOIEditor(
@@ -224,9 +224,9 @@ def test_undo_stack_max_depth(tmp_path):
         spacing_mm=[1.0, 1.0, 1.0], vessel_name="LAD",
         output_path=tmp_path / "out.npy",
     )
-    for _ in range(30):
-        editor._save_to_undo_stack()
-    assert len(editor.undo_stack) == 20
+    for _ in range(40):
+        editor._save_undo()
+    assert len(editor.undo_stack) == 30
     plt.close("all")
 
 

@@ -46,51 +46,10 @@ pip install -r requirements.txt
 
 ---
 
-## Quick Start — Clinical QA Workflow (default / recommended)
-
-The standard workflow: auto-generate seeds, run the pipeline, and use the
-interactive review tools to verify each vessel.
-
-```bash
-# Step 1: Run pipeline with auto-generated seeds
-python pipeline/run_pipeline.py \
-    --dicom Rahaf_Patients/1200.2 \
-    --output output/patient_1200 \
-    --prefix patient1200 \
-    --auto-seeds
-```
-This will:
-1. Run TotalSegmentator to locate coronary artery seed points automatically
-2. Extract centerlines, build tubular VOIs, and compute FAI statistics
-3. **For each vessel, open the mandatory VOI Editor** so the radiologist/cardiologist can review and approve the auto-segmented VOI
-4. **For each vessel, open the interactive CPR Browser** so you can inspect cross-sections along the vessel
-5. Export per-vessel `.nii.gz` binary masks and visualization figures
-
-```bash
-# Step 2: Review auto-generated seeds (optional but recommended)
-python pipeline/seed_reviewer.py \
-    --dicom Rahaf_Patients/1200.2 \
-    --seeds seeds/1200_2_auto.json \
-    --output seeds/patient_1200_reviewed.json
-```
-
-For processing multiple patients in batch mode:
-
-```bash
-python pipeline/run_pipeline.py --batch --auto-seeds
-```
-
-**Headless / CI environments** (no display available): add `--skip-editor --skip-cpr-browser` to bypass all interactive review steps:
-
-```bash
-python pipeline/run_pipeline.py --dicom ... --auto-seeds --skip-editor --skip-cpr-browser
-```
-
-> **Warning:** `--skip-editor` bypasses the mandatory clinical review. Only use this when a separate manual review will be performed after the fact.
-
----
-
 ## Quick Start — Fully Automatic Mode
+Runs the entire pipeline with zero interaction — no windows, no prompts. Suitable for batch processing, CI, and headless servers.
+
+> **For research / bulk data only.** This mode skips the mandatory clinical VOI review. Do not use for clinical reporting without a separate manual review step.
 
 ```bash
 python pipeline/run_pipeline.py \
@@ -102,7 +61,49 @@ python pipeline/run_pipeline.py \
     --skip-cpr-browser
 ```
 
-This runs the full pipeline without any interactive windows — suitable for batch/headless/CI environments.
+Batch mode:
+```bash
+python pipeline/run_pipeline.py --batch --auto-seeds --skip-editor --skip-cpr-browser
+```
+
+This will automatically:
+1. Run TotalSegmentator to locate coronary artery seed points
+2. Extract centerlines, build tubular VOIs, and compute FAI statistics
+3. Export per-vessel `.nii.gz` binary masks and visualization figures
+
+---
+
+## Quick Start — Clinical QA Workflow (recommended for clinical use)
+
+The recommended workflow for clinical reporting: auto-generate seeds, interactively review and correct them, run the pipeline, then use the built-in review tools to verify each vessel’s VOI and cross-sections before accepting the results.
+
+```bash
+# Step 1: Auto-generate seeds with TotalSegmentator and run full pipeline
+python pipeline/run_pipeline.py \
+    --dicom Rahaf_Patients/1200.2 \
+    --output output/patient_1200 \
+    --prefix patient1200 \
+    --auto-seeds
+```
+This will:
+1. Run TotalSegmentator to locate coronary artery seed points automatically
+2. Extract centerlines, build tubular VOIs, and compute FAI statistics
+3. **For each vessel, open the VOI Editor** so the radiologist/cardiologist can review and approve the auto-segmented VOI
+4. **For each vessel, open the CPR Browser** to inspect cross-sections along the vessel
+5. Export per-vessel `.nii.gz` binary masks and visualization figures
+```bash
+# Step 2 (optional but recommended): Review and correct auto-generated seeds before running
+python pipeline/seed_reviewer.py \
+    --dicom Rahaf_Patients/1200.2 \
+    --seeds seeds/1200_2_auto.json \
+    --output seeds/patient_1200_reviewed.json
+```
+
+For batch mode:
+
+```bash
+python pipeline/run_pipeline.py --batch --auto-seeds
+```
 
 ## Manual Seed Workflow
 
@@ -206,10 +207,9 @@ python pipeline/seed_reviewer.py \
 ---
 
 ### Step 2: VOI Editor — Mandatory Sanity Check (`voi_editor.py`)
-
 After the pipeline builds the tubular VOI for each vessel, it automatically launches the VOI editor. This is a **mandatory clinical review step** — the pipeline blocks until the window is closed.
 
-The editor shows all three MPR views (axial, coronal, sagittal) with the auto-segmented VOI overlaid in semi-transparent yellow. The clinician can paint voxels on or off before saving.
+The editor shows all three MPR views (axial, coronal, sagittal). The auto-segmented VOI is overlaid in **blood-red** (semi-transparent) so you can immediately see what TotalSegmentator produced. Once you make any edit it switches to **yellow-gold** to indicate manual changes.
 
 ```bash
 # Standalone usage (e.g. to re-review a saved mask):
@@ -220,17 +220,29 @@ python pipeline/voi_editor.py \
     --output output/patient_1200/patient1200_LAD_voi_corrected.npy
 ```
 
-**VOI Editor Controls:**
+A **Tkinter toolbar** above the image panels lets you switch modes with one click:
+
+| Toolbar Button | Key | Effect |
+|---|---|---|
+| 🖌 Paint | `1` | Left-drag adds voxels to VOI |
+| ⌫ Erase | `2` | Left-drag removes voxels from VOI |
+| ⭕ Fat-only | `3` | Left-drag adds **only fat voxels** (−190 to −30 HU) — ideal for large regions |
+| ✋ Pan | `4` | Left-drag pans the view |
+
+**Additional controls:**
 
 | Key / Action | Effect |
 |---|---|
-| Left-click drag | ADD voxels to VOI mask |
-| Right-click drag | REMOVE voxels from VOI mask |
-| `+` / `-` | Increase / decrease brush radius (default: 2 voxels) |
-| `u` or `Ctrl+Z` | Undo last stroke (up to 20 levels) |
-| `s` | Save edited mask as `.npy` (and `.nii.gz` if nibabel available) |
+| Right-click drag | Always erases (regardless of toolbar mode) |
+| `[` / `]` | Decrease / increase brush radius (1–20 voxels) |
+| `+` / `-` | Increase / decrease brush radius (aliases for `]` / `[`) |
+| `Ctrl+scroll` | Zoom in / out on the active panel |
+| Middle-drag | Pan the active panel |
+| `r` | Reset zoom on all panels |
+| `u` or `Ctrl+Z` | Undo last stroke (up to 30 levels) |
+| `s` | Save mask as `.npy` (and `.nii.gz` if nibabel available) |
 | `q` | Quit without saving |
-| Scroll wheel | Change slice in each MPR panel |
+| Scroll wheel | Change slice in active panel |
 | `w` / `W` | Window width wider / narrower |
 | `l` / `L` | Window level up / down |
 

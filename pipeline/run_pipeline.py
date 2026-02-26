@@ -165,6 +165,7 @@ def run_patient(
     prefix: str = "pcat",
     vessels: Optional[List[str]] = None,
     skip_3d: bool = False,
+    skip_editor: bool = False,
     vesselness_sigmas: Optional[List[float]] = None,
     auto_seeds: bool = False,
     auto_seeds_device: str = _DEFAULT_DEVICE,
@@ -179,6 +180,7 @@ def run_patient(
     prefix      : filename prefix for all outputs
     vessels     : list of vessels to process (default: all in seeds file)
     skip_3d     : skip 3D pyvista render (use in headless/CI environments)
+    skip_editor  : skip interactive VOI editor (use in headless/CI environments)
     vesselness_sigmas : Frangi scale sigmas in mm (default: [0.5, 1.0, 1.5, 2.0, 2.5])
     auto_seeds        : if True and seeds_path missing, call TotalSegmentator auto-seed
     auto_seeds_device : device for TotalSegmentator ("cpu"|"gpu"|"mps")
@@ -324,20 +326,26 @@ def run_patient(
         # ── Build VOI ──────────────────────────────────────────────────
         print(f"[pipeline] Building {vessel_name} tubular VOI...")
         voi_mask = build_tubular_voi(volume.shape, centerline, spacing_mm, radii_mm)
-        vessel_voi_masks[vessel_name] = voi_mask
-        print(f"[pipeline] VOI voxels: {voi_mask.sum():,}")
+        print(f"[pipeline] VOI voxels (auto): {voi_mask.sum():,}")
+
 
         # ── Mandatory sanity check: let the clinician review/edit VOI ────
-        print(f"[pipeline] MANDATORY SANITY CHECK: launching VOI editor for {vessel_name}...")
-        voi_npy_path = output_dir / f"{prefix}_{vessel_name}_voi_reviewed.npy"
-        voi_mask = launch_voi_editor(
-            volume=volume,
-            voi_mask=voi_mask,
-            vessel_name=vessel_name,
-            output_path=voi_npy_path,
-            spacing_mm=spacing_mm,
-        )
-        print(f"[pipeline] VOI review complete. Voxels: {voi_mask.sum():,}")
+        if skip_editor:
+            print(f"[pipeline] --skip-editor set: skipping VOI review for {vessel_name}")
+        else:
+            print(f"[pipeline] MANDATORY SANITY CHECK: launching VOI editor for {vessel_name}...")
+            voi_npy_path = output_dir / f"{prefix}_{vessel_name}_voi_reviewed.npy"
+            voi_mask = launch_voi_editor(
+                volume=volume,
+                voi_mask=voi_mask,
+                vessel_name=vessel_name,
+                output_path=voi_npy_path,
+                spacing_mm=spacing_mm,
+            )
+            print(f"[pipeline] VOI review complete. Voxels: {voi_mask.sum():,}")
+        vessel_voi_masks[vessel_name] = voi_mask
+        # Store reviewed (or original if skip_editor) mask for 3D render + combined export
+
 
         # ── Compute stats ──────────────────────────────────────────────
         stats = compute_pcat_stats(volume, voi_mask, vessel_name)
@@ -516,6 +524,15 @@ def main():
         help="Skip 3D pyvista rendering (useful on headless servers)"
     )
     parser.add_argument(
+        "--skip-editor", action="store_true",
+        dest="skip_editor",
+        help=(
+            "Skip the interactive VOI editor sanity check. Use in headless/CI/batch "
+            "environments where no display is available. WARNING: bypasses mandatory "
+            "clinical review step — only use when a separate manual review will be done."
+        ),
+    )
+    parser.add_argument(
         "--project-root", type=str, default=".",
         help="Project root directory (for resolving relative paths in batch mode)"
     )
@@ -574,6 +591,7 @@ def main():
                     prefix=cfg["prefix"],
                     vessels=args.vessels,
                     skip_3d=args.skip_3d,
+                    skip_editor=args.skip_editor,
                     auto_seeds=args.auto_seeds,
                     auto_seeds_device=args.auto_seeds_device,
                     auto_seeds_license=args.auto_seeds_license,
@@ -604,6 +622,7 @@ def main():
             prefix=args.prefix,
             vessels=args.vessels,
             skip_3d=args.skip_3d,
+            skip_editor=args.skip_editor,
             auto_seeds=args.auto_seeds,
             auto_seeds_device=args.auto_seeds_device,
             auto_seeds_license=args.auto_seeds_license,

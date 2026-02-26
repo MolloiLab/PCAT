@@ -1,36 +1,37 @@
 """
 run_pipeline.py
 Main CLI entry point for the PCAT segmentation pipeline.
+    # Option A: Fully automatic (no manual seeds needed)
+    python pipeline/run_pipeline.py \
+        --dicom Rahaf_Patients/1200.2 \
+        --output output/patient_1200 \
+        --prefix patient1200 \
+        --auto-seeds
 
-Usage:
-    # Step 1: Pick seeds interactively (one-time per patient)
+    # Option B: Manual seeds (traditional workflow)
     python pipeline/seed_picker.py \
         --dicom Rahaf_Patients/1200.2 \
         --output seeds/patient_1200.json
-
-    # Step 2: Run full pipeline
-    python pipeline/run_pipeline.py \
         --dicom   Rahaf_Patients/1200.2 \
         --seeds   seeds/patient_1200.json \
         --output  output/patient_1200 \
         --prefix  patient1200
-
-    # Or run all patients in batch:
     python pipeline/run_pipeline.py --batch
-
+    python pipeline/run_pipeline.py --batch --auto-seeds
 Full pipeline per patient:
   1. Load DICOM → float32 HU volume
-  2. Compute Frangi vesselness (multi-scale)
-  3. For each vessel (LAD, LCX, RCA):
-     a. Extract centerline via Dijkstra shortest path from seeds
+  2. (Optional) Auto-generate seeds via TotalSegmentator if --auto-seeds set
+  3. Compute Frangi vesselness (multi-scale)
+  4. For each vessel (LAD, LCX, RCA):
+     a. Extract centerline via FMM/Dijkstra shortest path from seeds
      b. Clip to proximal segment (40mm for LAD/LCX; 10–50mm for RCA)
      c. Estimate vessel radii via EDT
      d. Build tubular VOI mask (outer shell = mean_diameter thick)
      e. Export per-vessel .raw + metadata JSON
      f. Plot: CPR FAI, HU histogram, radial HU profile
-  4. Compute combined (all-vessel) VOI and export as single .raw
-  5. Render combined 3D VOI visualization
-  6. Write per-patient stats JSON
+  5. Compute combined (all-vessel) VOI and export as single .raw
+  6. Render combined 3D VOI visualization
+  7. Write per-patient stats JSON
 """
 
 from __future__ import annotations
@@ -105,6 +106,52 @@ PATIENT_CONFIGS = [
 # Single patient pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _ensure_seeds(
+    seeds_path: Path,
+    dicom_dir: Path,
+    auto_seeds: bool,
+    auto_seeds_device: str = "cpu",
+    auto_seeds_license: Optional[str] = None,
+) -> None:
+    """
+    Ensure seeds_path exists. If it does not exist and auto_seeds is True,
+    call generate_seeds() automatically via TotalSegmentator.
+    Raises FileNotFoundError / RuntimeError on failure.
+    """
+    if seeds_path.exists():
+        return
+    if auto_seeds:
+        print(
+            f"[pipeline] Seeds file not found: {seeds_path}\n"
+            f"[pipeline] --auto-seeds enabled -> running TotalSegmentator..."
+        )
+        try:
+            from pipeline.auto_seeds import generate_seeds
+        except ImportError as exc:
+            raise RuntimeError(
+                "auto_seeds module could not be imported. "
+                "Make sure TotalSegmentator is installed: pip install TotalSegmentator"
+            ) from exc
+        generate_seeds(
+            dicom_dir=dicom_dir,
+            output_json=seeds_path,
+            device=auto_seeds_device,
+            license_number=auto_seeds_license,
+        )
+        if not seeds_path.exists():
+            raise RuntimeError(
+                f"generate_seeds() completed but {seeds_path} was not written."
+            )
+        print(f"[pipeline] Auto-seeds written: {seeds_path}")
+    else:
+        raise FileNotFoundError(
+            f"Seeds file not found: {seeds_path}\n"
+            f"Run seed_picker.py first:\n"
+            f"  python pipeline/seed_picker.py --dicom {dicom_dir} --output {seeds_path}\n"
+            f"Or use --auto-seeds to generate seeds automatically via TotalSegmentator."
+        )
+
+
 def run_patient(
     dicom_dir: str | Path,
     seeds_path: str | Path,
@@ -113,11 +160,12 @@ def run_patient(
     vessels: Optional[List[str]] = None,
     skip_3d: bool = False,
     vesselness_sigmas: Optional[List[float]] = None,
+    auto_seeds: bool = False,
+    auto_seeds_device: str = "cpu",
+    auto_seeds_license: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Run the full PCAT pipeline for one patient.
-
-    Parameters
     ----------
     dicom_dir   : path to DICOM series directory
     seeds_path  : path to seed JSON file
@@ -126,7 +174,9 @@ def run_patient(
     vessels     : list of vessels to process (default: all in seeds file)
     skip_3d     : skip 3D pyvista render (use in headless/CI environments)
     vesselness_sigmas : Frangi scale sigmas in mm (default: [0.5, 1.0, 1.5, 2.0, 2.5])
-
+    auto_seeds        : if True and seeds_path missing, call TotalSegmentator auto-seed
+    auto_seeds_device : device for TotalSegmentator ("cpu"|"gpu"|"mps")
+    auto_seeds_license: TotalSegmentator licence key (or set TOTALSEG_LICENSE env var)
     Returns
     -------
     results dict with per-vessel stats and output file paths
@@ -135,8 +185,6 @@ def run_patient(
     seeds_path = Path(seeds_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    t0 = time.time()
     results: Dict[str, Any] = {
         "patient_prefix": prefix,
         "dicom_dir": str(dicom_dir),
@@ -146,7 +194,7 @@ def run_patient(
         "errors": [],
     }
 
-    # ── Step 1: Load DICOM ───────────────────────────────────────────────
+    # -- Step 1: Load DICOM ----------------------------------------------------
     print(f"\n{'='*60}")
     print(f"[pipeline] Patient: {prefix}")
     print(f"[pipeline] DICOM: {dicom_dir}")
@@ -157,14 +205,14 @@ def run_patient(
     print(f"[pipeline] Volume shape: {volume.shape}, spacing_mm: {[f'{s:.4f}' for s in spacing_mm]}")
     print(f"[pipeline] HU range: [{volume.min():.0f}, {volume.max():.0f}]")
     results["meta"] = meta
-
-    # ── Step 2: Load seeds ───────────────────────────────────────────────
-    if not seeds_path.exists():
-        raise FileNotFoundError(
-            f"Seeds file not found: {seeds_path}\n"
-            f"Run seed_picker.py first:\n"
-            f"  python pipeline/seed_picker.py --dicom {dicom_dir} --output {seeds_path}"
-        )
+    # -- Step 2: Ensure seeds exist (auto-generate if needed) ------------------
+    _ensure_seeds(
+        seeds_path=seeds_path,
+        dicom_dir=dicom_dir,
+        auto_seeds=auto_seeds,
+        auto_seeds_device=auto_seeds_device,
+        auto_seeds_license=auto_seeds_license,
+    )
 
     seeds_data = load_seeds(seeds_path)
     if vessels is None:
@@ -444,6 +492,29 @@ def main():
         "--project-root", type=str, default=".",
         help="Project root directory (for resolving relative paths in batch mode)"
     )
+    parser.add_argument(
+        "--auto-seeds", action="store_true",
+        help=(
+            "Automatically generate seeds via TotalSegmentator if seeds JSON is missing. "
+            "Requires a free academic licence from "
+            "https://backend.totalsegmentator.com/license-academic/"
+        ),
+    )
+    parser.add_argument(
+        "--auto-seeds-device", type=str, default="cpu",
+        choices=["cpu", "gpu", "mps"],
+        dest="auto_seeds_device",
+        help="Device for TotalSegmentator inference (default: cpu; safe on M3)"
+    )
+    parser.add_argument(
+        "--auto-seeds-license", type=str, default=None,
+        dest="auto_seeds_license",
+        metavar="KEY",
+        help=(
+            "TotalSegmentator academic licence key. "
+            "Alternatively set the TOTALSEG_LICENSE environment variable."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -460,12 +531,11 @@ def main():
             if not dicom_path.exists():
                 print(f"[pipeline] Skipping {cfg['patient_id']}: DICOM not found at {dicom_path}")
                 continue
-            if not seeds_path.exists():
+            if not seeds_path.exists() and not args.auto_seeds:
                 print(
                     f"[pipeline] Skipping {cfg['patient_id']}: seeds file not found at {seeds_path}\n"
-                    f"           Run seed_picker.py first:\n"
-                    f"           python pipeline/seed_picker.py "
-                    f"--dicom {dicom_path} --output {seeds_path}"
+                    f"           Run seed_picker.py first OR use --auto-seeds:\n"
+                    f"           python pipeline/run_pipeline.py --batch --auto-seeds"
                 )
                 continue
 
@@ -477,6 +547,9 @@ def main():
                     prefix=cfg["prefix"],
                     vessels=args.vessels,
                     skip_3d=args.skip_3d,
+                    auto_seeds=args.auto_seeds,
+                    auto_seeds_device=args.auto_seeds_device,
+                    auto_seeds_license=args.auto_seeds_license,
                 )
                 all_results.append(r)
             except Exception as e:
@@ -488,16 +561,25 @@ def main():
 
     else:
         # Single patient mode
-        if not args.seeds:
-            parser.error("--seeds is required in single patient mode")
+        if not args.seeds and not args.auto_seeds:
+            parser.error("--seeds is required unless --auto-seeds is set")
 
+        # Derive a default seeds path when --auto-seeds is used without --seeds
+        seeds_arg = args.seeds
+        if seeds_arg is None and args.auto_seeds:
+            patient_name = Path(args.dicom).name.replace(".", "_")
+            seeds_arg = f"seeds/{patient_name}_auto.json"
+            print(f"[pipeline] --auto-seeds: will write seeds to {seeds_arg}")
         run_patient(
             dicom_dir=args.dicom,
-            seeds_path=args.seeds,
+            seeds_path=seeds_arg,
             output_dir=args.output,
             prefix=args.prefix,
             vessels=args.vessels,
             skip_3d=args.skip_3d,
+            auto_seeds=args.auto_seeds,
+            auto_seeds_device=args.auto_seeds_device,
+            auto_seeds_license=args.auto_seeds_license,
         )
 
 

@@ -363,10 +363,14 @@ def _skeleton_to_ordered_path(
     """
     Convert a 3-D skeleton (bool array) to an ordered list of voxels from
     the point closest to the aorta (ostium) outward.
+    Algorithm:
+    1. Build a lookup of all skeleton voxel coordinates.
+    2. BFS from the ostium voxel (closest to aorta center) over 26-connected
+       skeleton neighbours.
+    3. Return points in BFS order (proximal -> distal).
 
-    Uses a simple greedy nearest-neighbour walk starting from the ostium
-    candidate, visiting each unvisited skeleton voxel by proximity.
-
+    This is robust to branching skeletons and avoids the early-stop
+    problem of a greedy nearest-neighbour walk.
     Returns
     -------
     ordered : (N, 3) int array  [z, y, x]
@@ -374,33 +378,41 @@ def _skeleton_to_ordered_path(
     pts = np.argwhere(skel_mask)  # (N, 3)
     if len(pts) == 0:
         return np.empty((0, 3), dtype=int)
+    if len(pts) == 1:
+        return pts
 
+    # Build a voxel lookup: coord tuple -> index
+    coord_to_idx = {(int(p[0]), int(p[1]), int(p[2])): i for i, p in enumerate(pts)}
     # Ostium = skeleton point closest to the aorta center
     dists_to_aorta = np.linalg.norm(pts - aorta_center_zyx, axis=1)
     start_idx = int(np.argmin(dists_to_aorta))
-
-    # Greedy walk: at each step go to the unvisited neighbour with the
-    # smallest Euclidean distance to the current point.
+    # BFS over 26-connected skeleton neighbours
+    from collections import deque
     visited = np.zeros(len(pts), dtype=bool)
-    ordered_indices = [start_idx]
+    ordered_indices: list = []
+    queue: deque = deque([start_idx])
     visited[start_idx] = True
+    while queue:
+        idx = queue.popleft()
+        ordered_indices.append(idx)
+        p = pts[idx]
+        for dz in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dz == 0 and dy == 0 and dx == 0:
+                        continue
+                    nb = (int(p[0]) + dz, int(p[1]) + dy, int(p[2]) + dx)
+                    nb_idx = coord_to_idx.get(nb)
+                    if nb_idx is not None and not visited[nb_idx]:
+                        visited[nb_idx] = True
+                        queue.append(nb_idx)
 
-    for _ in range(len(pts) - 1):
-        current = pts[ordered_indices[-1]]
-        unvisited_mask = ~visited
-        if not unvisited_mask.any():
-            break
-        unvisited_pts = pts[unvisited_mask]
-        unvisited_idxs = np.where(unvisited_mask)[0]
-        dists = np.linalg.norm(unvisited_pts - current, axis=1)
-        nearest = int(unvisited_idxs[np.argmin(dists)])
-        # Only continue if we haven't jumped more than 10 voxels
-        if dists.min() > 10:
-            break
-        ordered_indices.append(nearest)
-        visited[nearest] = True
+    # Append any disconnected fragments (rare, but include them)
+    for i in range(len(pts)):
+        if not visited[i]:
+            ordered_indices.append(i)
 
-    return pts[ordered_indices]
+    return pts[np.array(ordered_indices, dtype=int)]
 
 
 def _estimate_aorta_center(

@@ -203,6 +203,7 @@ def run_patient(
     print(f"[pipeline] Patient: {prefix}")
     print(f"[pipeline] DICOM: {dicom_dir}")
     print(f"{'='*60}")
+    t0 = time.time()
     print("[pipeline] Loading DICOM series...")
     volume, meta = load_dicom_series(dicom_dir)
     spacing_mm = meta["spacing_mm"]
@@ -232,8 +233,13 @@ def run_patient(
         if vname not in seeds_data:
             continue
         vsd = seeds_data[vname]
-        all_seed_pts.append(vsd["ostium_ijk"])
-        all_seed_pts.extend(vsd.get("waypoints_ijk", []))
+        ostium = vsd["ostium_ijk"]
+        # Skip null/placeholder seeds (auto_seeds inserts [None,None,None] for missing vessels)
+        if ostium and all(v is not None for v in ostium):
+            all_seed_pts.append(ostium)
+        for wp in vsd.get("waypoints_ijk", []):
+            if wp and all(v is not None for v in wp):
+                all_seed_pts.append(wp)
 
     print("\n[pipeline] Computing Frangi vesselness filter (ROI-cropped — should take ~10s)...")
     t_v = time.time()
@@ -260,9 +266,14 @@ def run_patient(
             print(f"[pipeline] WARNING: {msg}")
             results["errors"].append(msg)
             continue
-
         vsd = seeds_data[vessel_name]
         ostium_ijk = vsd["ostium_ijk"]
+        # Skip vessels with null/placeholder seeds (auto_seeds inserts [None,None,None] for missing vessels)
+        if not ostium_ijk or any(v is None for v in ostium_ijk):
+            msg = f"Vessel {vessel_name} has null seeds -- skipping (run seed_picker.py to add manually)"
+            print(f"[pipeline] WARNING: {msg}")
+            results["errors"].append(msg)
+            continue
         waypoints_ijk = vsd.get("waypoints_ijk", [])
         seg_start = float(VESSEL_CONFIGS[vessel_name].get("start_mm", 0.0))
         seg_length = float(VESSEL_CONFIGS[vessel_name].get("length_mm", 40.0))

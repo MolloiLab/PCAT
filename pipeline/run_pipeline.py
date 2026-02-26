@@ -271,6 +271,13 @@ def run_patient(
             f"fat_fraction={100*stats['fat_fraction']:.1f}%, "
             f"n_fat={stats['n_fat_voxels']:,}"
         )
+        risk = stats.get("fai_risk", "UNKNOWN")
+        threshold = stats.get("fai_risk_threshold_hu", -70.1)
+        risk_icon = "\u26a0\ufe0f  HIGH RISK" if risk == "HIGH" else ("\u2713 LOW RISK" if risk == "LOW" else "? UNKNOWN")
+        print(
+            f"[pipeline] {vessel_name} FAI RISK: {risk_icon} "
+            f"(mean HU {stats['hu_mean']:.1f} vs threshold {threshold} HU)"
+        )
 
         # ── Export per-vessel .raw ─────────────────────────────────────
         raw_path, json_path = export_voi_raw(

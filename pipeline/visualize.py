@@ -39,6 +39,7 @@ matplotlib.use("Agg")   # Non-interactive backend for batch rendering
 
 FAI_HU_MIN = -190.0
 FAI_HU_MAX = -30.0
+FAI_RISK_THRESHOLD = -70.1  # Oikonomou 2018 / CRISP-CT: FAI > -70.1 HU = HIGH risk
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -402,6 +403,8 @@ def plot_hu_histogram(
     # Vertical lines
     ax.axvline(FAI_HU_MIN, color="orange", linewidth=1.2, linestyle="--", alpha=0.8)
     ax.axvline(FAI_HU_MAX, color="red", linewidth=1.2, linestyle="--", alpha=0.8)
+    ax.axvline(FAI_RISK_THRESHOLD, color="#CC2200", linewidth=1.8, linestyle=":",
+               label=f"FAI risk cut-off ({FAI_RISK_THRESHOLD} HU)")
     ax.axvline(float(np.mean(fat_vals)) if len(fat_vals) > 0 else 0,
                color="red", linewidth=1.5, linestyle="-",
                label=f"Mean FAI HU = {np.mean(fat_vals):.1f}" if len(fat_vals) > 0 else "")
@@ -543,6 +546,8 @@ def plot_radial_hu_profile(
     ax1.axhspan(FAI_HU_MIN, FAI_HU_MAX, alpha=0.08, color="orange")
     ax1.axhline(FAI_HU_MIN, color="orange", linestyle="--", linewidth=0.8, alpha=0.6)
     ax1.axhline(FAI_HU_MAX, color="red", linestyle="--", linewidth=0.8, alpha=0.6)
+    ax1.axhline(FAI_RISK_THRESHOLD, color="#CC2200", linewidth=1.6, linestyle=":",
+               alpha=0.9, label=f"FAI risk cut-off ({FAI_RISK_THRESHOLD} HU)")
 
     if valid.any():
         ax1.plot(

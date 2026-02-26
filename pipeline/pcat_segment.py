@@ -138,7 +138,9 @@ def build_vessel_mask(
 
 FAI_HU_MIN = -190.0
 FAI_HU_MAX = -30.0
-
+# FAI risk threshold — Oikonomou et al. Lancet 2018, validated in CRISP-CT (n=1,872)
+# FAI > -70.1 HU → high cardiac mortality risk (HR = 9.04 for cardiac death)
+FAI_RISK_THRESHOLD = -70.1
 
 def apply_fai_filter(
     volume: np.ndarray,
@@ -192,13 +194,19 @@ def compute_pcat_stats(
     """
     hu_in_voi = volume[voi_mask]
     fat_voxels = hu_in_voi[(hu_in_voi >= hu_min) & (hu_in_voi <= hu_max)]
+    hu_mean = float(np.mean(fat_voxels)) if len(fat_voxels) > 0 else float("nan")
 
+    # FAI risk classification (Oikonomou 2018, CRISP-CT): > -70.1 HU = high risk
+    if len(fat_voxels) > 0 and not np.isnan(hu_mean):
+        fai_risk = "HIGH" if hu_mean > FAI_RISK_THRESHOLD else "LOW"
+    else:
+        fai_risk = "UNKNOWN"
     stats = {
         "vessel": vessel_name,
         "n_voi_voxels": int(voi_mask.sum()),
         "n_fat_voxels": int(len(fat_voxels)),
         "fat_fraction": float(len(fat_voxels) / max(voi_mask.sum(), 1)),
-        "hu_mean": float(np.mean(fat_voxels)) if len(fat_voxels) > 0 else float("nan"),
+        "hu_mean": hu_mean,
         "hu_std": float(np.std(fat_voxels)) if len(fat_voxels) > 0 else float("nan"),
         "hu_median": float(np.median(fat_voxels)) if len(fat_voxels) > 0 else float("nan"),
         "hu_min_measured": float(np.min(fat_voxels)) if len(fat_voxels) > 0 else float("nan"),
@@ -206,5 +214,8 @@ def compute_pcat_stats(
         "hu_p25": float(np.percentile(fat_voxels, 25)) if len(fat_voxels) > 0 else float("nan"),
         "hu_p75": float(np.percentile(fat_voxels, 75)) if len(fat_voxels) > 0 else float("nan"),
         "FAI_HU_range": [hu_min, hu_max],
+        "fai_risk_threshold_hu": FAI_RISK_THRESHOLD,
+        "fai_risk": fai_risk,
+        "fai_risk_note": "FAI > -70.1 HU = HIGH cardiac mortality risk (HR=9.04, Oikonomou 2018 / CRISP-CT)",
     }
     return stats

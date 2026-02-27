@@ -68,6 +68,7 @@ from pipeline.visualize import (
     render_3d_voi,
     render_3d_voi_dicom,
     render_cpr_fai,
+    render_cpr_dicom,
     render_cpr_grayscale,
     render_cpr_native,
     plot_hu_histogram,
@@ -197,6 +198,15 @@ def run_patient(
     seeds_path = Path(seeds_path)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create subdirectories for organized output
+    raw_dir   = output_dir / "raw"
+    cpr_dir   = output_dir / "cpr"
+    plots_dir = output_dir / "plots"
+    d3_dir    = output_dir / "3d"
+    for d in [raw_dir, cpr_dir, plots_dir, d3_dir]:
+        d.mkdir(parents=True, exist_ok=True)
+    
     results: Dict[str, Any] = {
         "patient_prefix": prefix,
         "dicom_dir": str(dicom_dir),
@@ -338,7 +348,7 @@ def run_patient(
             print(f"[pipeline] --skip-editor set: skipping VOI review for {vessel_name}")
         else:
             print(f"[pipeline] MANDATORY SANITY CHECK: launching VOI editor for {vessel_name}...")
-            voi_npy_path = output_dir / f"{prefix}_{vessel_name}_voi_reviewed.npy"
+            voi_npy_path = raw_dir / f"{prefix}_{vessel_name}_voi_reviewed.npy"
             voi_mask = launch_voi_editor(
                 volume=volume,
                 voi_mask=voi_mask,
@@ -373,7 +383,7 @@ def run_patient(
             volume=volume,
             voi_mask=voi_mask,
             meta=meta,
-            output_dir=output_dir,
+            output_dir=raw_dir,
             prefix=f"{prefix}_{vessel_name}",
         )
         results["outputs"].append(str(raw_path))
@@ -389,12 +399,26 @@ def run_patient(
             radii_mm=radii_mm,
             spacing_mm=spacing_mm,
             vessel_name=vessel_name,
-            output_dir=output_dir,
+            output_dir=cpr_dir,
             prefix=prefix,
             width_mm=40.0,
         )
         if cpr_path:
             results["outputs"].append(str(cpr_path))
+            
+        # Output 3d: CPR DICOM Secondary Capture
+        cpr_dcm_path = render_cpr_dicom(
+            volume=volume,
+            centerline_ijk=centerline_full,
+            radii_mm=radii_mm,
+            spacing_mm=spacing_mm,
+            vessel_name=vessel_name,
+            output_dir=cpr_dir,
+            prefix=prefix,
+            patient_meta=meta,
+        )
+        if cpr_dcm_path:
+            results["outputs"].append(str(cpr_dcm_path))
 
         # Output 3b: CPR grayscale multi-rotation
         cpr_gray_path = render_cpr_grayscale(
@@ -403,7 +427,7 @@ def run_patient(
             radii_mm=radii_mm,
             spacing_mm=spacing_mm,
             vessel_name=vessel_name,
-            output_dir=output_dir,
+            output_dir=cpr_dir,
             prefix=prefix,
             width_mm=40.0,
         )
@@ -417,7 +441,7 @@ def run_patient(
             radii_mm=radii_mm,
             spacing_mm=spacing_mm,
             vessel_name=vessel_name,
-            output_dir=output_dir,
+            output_dir=cpr_dir,
             prefix=prefix,
             half_width_mm=40.0,
         )
@@ -450,7 +474,7 @@ def run_patient(
             volume=volume,
             voi_mask=voi_mask,
             vessel_name=vessel_name,
-            output_dir=output_dir,
+            output_dir=plots_dir,
             prefix=prefix,
         )
         results["outputs"].append(str(hist_path))
@@ -462,7 +486,7 @@ def run_patient(
             radii_mm=radii_mm,
             spacing_mm=spacing_mm,
             vessel_name=vessel_name,
-            output_dir=output_dir,
+            output_dir=plots_dir,
             prefix=prefix,
         )
         results["outputs"].append(str(profile_path))
@@ -477,7 +501,7 @@ def run_patient(
             volume=volume,
             vessel_masks=vessel_voi_masks,
             meta=meta,
-            output_dir=output_dir,
+            output_dir=raw_dir,
             prefix=f"{prefix}_combined",
         )
         results["outputs"].append(str(raw_path))
@@ -496,13 +520,13 @@ def run_patient(
             vessel_centerlines=vessel_centerlines,
             vessel_radii=vessel_radii_dict,
             spacing_mm=spacing_mm,
-            output_dir=output_dir,
+            output_dir=d3_dir,
             prefix=prefix,
         )
 
     # ── Step 6: Summary chart ─────────────────────────────────────────────
     if vessel_stats:
-        summary_path = plot_summary(vessel_stats, output_dir=output_dir, prefix=prefix)
+        summary_path = plot_summary(vessel_stats, output_dir=plots_dir, prefix=prefix)
         results["outputs"].append(str(summary_path))
 
     # ── Save results JSON ─────────────────────────────────────────────────

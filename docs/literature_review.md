@@ -226,3 +226,121 @@ Jerman et al. showed OOF significantly outperforms Frangi in vessel segmentation
 7. Zhang et al. *[Journal]* 2025. PMID: 39888471 — Deep RL centerline (Actor-Critic)
 8. Liu CC et al. *Proc SPIE* 13407. 2025 — Lightweight CNN centerline (8–15s)
 9. Zhang et al. *[Journal]* 2025. PMID: 40751109 — BEA-CACE double-DQN
+
+---
+
+## 7. PCAT as a Cardiovascular Biomarker: Study Context
+
+### 7.1 Epidemiological Evidence
+
+Pericoronary adipose tissue volume and attenuation are independently associated with coronary artery disease severity. Multiple large cohort studies establish the clinical context:
+
+**CRISP-CT (Oikonomou et al. 2018, *Lancet*, PMID 30170852)**  
+The foundational prospective study. In 1,872 patients undergoing CCTA for suspected CAD, FAI around the right coronary artery (RCA-FAI) independently predicted cardiac death over 5 years (HR 9.04, 95% CI 2.12–38.6). This established FAI as the first non-invasive imaging biomarker of coronary inflammation detectable before atherosclerotic plaque formation.
+
+**CRISP-CT mechanistic validation:**  
+The biological mechanism was confirmed in matched histological specimens: perivascular fat biopsied adjacent to inflamed coronary segments showed significantly reduced lipid droplet size, reduced expression of adipogenic transcription factors (PPARgamma, FABP4), and increased expression of inflammatory cytokines (IL-6, TNF-alpha) — directly corresponding to the HU elevation measured on CT.
+
+**ORFAN Trial (Oikonomou et al. 2023, *Nature Cardiovascular Research*)**  
+The first prospective trial to test AI-enhanced PCAT analysis (CaRi-Heart score, Caristo Diagnostics). The trial demonstrated that coronary inflammation detected by FAI was a stronger predictor of MACE than conventional risk scores (ASCVD PCE score, SRS). The AI score added incremental predictive value beyond calcium scoring.
+
+### 7.2 Material Decomposition and Spectral CT for PCAT
+
+Standard single-energy CT measures a single integrated HU value that conflates contributions from water, lipid, protein, and calcium. **Spectral CT** (dual-energy or photon-counting detector CT) enables material decomposition to separate these components, potentially providing more specific markers of inflammation:
+
+**Water-lipid decomposition:**  
+Fat tissue is predominantly triglycerides (~86% lipid by weight). Inflamed PCAT shifts from lipid-dominant to more aqueous composition. On spectral CT, the **lipid map** (lipid density image) would directly quantify this shift — a fundamentally more specific measurement than the integrated FAI HU.
+
+**Photon-counting detector CT (PCD-CT):**  
+Next-generation scanners (Siemens NAEOTOM Alpha, GE HealthCare Revolution CT) provide simultaneous multi-energy data at full resolution. PCD-CT generates:
+- Virtual monoenergetic images (VMI) at any keV
+- Material decomposition maps (water, iodine, lipid, calcium)
+- Effective atomic number (Z-eff) maps
+
+For PCAT: VMI at 70 keV matches conventional CT noise/contrast characteristics while material maps add specificity. Our pipeline's current data (Siemens syngo.via, 'mono 70 keV' series label) is consistent with virtual monoenergetic reconstruction from a dual-energy or spectral acquisition.
+
+**Key implication for our pipeline:**  
+The -190 to -30 HU fat window is defined for conventional 120 kVp polychromatic CT. On VMI, the same tissue will appear slightly different due to the energy-dependent HU. The threshold needs validation at 70 keV VMI (expected shift: approximately +5 to +15 HU relative to 120 kVp).
+
+### 7.3 PCAT Volume vs. Attenuation
+
+Two separate PCAT phenotypes are measured:
+
+| Measure | Biological Meaning | Clinical Association |
+|---|---|---|
+| **PCAT attenuation (FAI, HU)** | Inflammatory phenotypic shift in adipocytes | Acute inflammation, plaque vulnerability, future MACE |
+| **PCAT volume (cm3)** | Total adipose depot size | Obesity, metabolic syndrome, chronic risk |
+
+These are partially independent: a patient can have high PCAT volume (large depot, obese) but low FAI (non-inflamed), or low volume but high FAI (lean but actively inflamed). Both should ideally be measured. Our pipeline currently computes **attenuation (FAI)** per vessel; volume is derivable from the same VOI mask (voxel count x voxel volume in cm3) and is already present in `compute_pcat_stats` output.
+
+---
+
+## 8. Coronary Artery Inflammation: Field Context
+
+### 8.1 The Vascular Inflammation Hypothesis
+
+The paradigm shift in cardiovascular medicine is the recognition that **atherosclerosis is fundamentally an inflammatory disease**, not merely a lipid storage disorder:
+
+- **Ross R. *NEJM* 1999**: Established the 'response-to-injury' hypothesis — endothelial activation by LDL, oxidative stress, and shear forces initiates an inflammatory cascade
+- **Ridker PM et al. *NEJM* 2017 (CANTOS trial)**: Showed anti-inflammatory therapy (canakinumab, IL-1beta antibody) reduced MACE by 15% independent of LDL, proving the causal role of inflammation
+- **Libby et al. *Nature* 2021**: Comprehensive review establishing the 'inflammasome' pathway (NLRP3) as the central mediator of plaque vulnerability
+
+### 8.2 Perivascular Adipose Tissue as Paracrine Signalling Hub
+
+**Vasocrine signalling (arterial wall -> fat):**
+- Coronary arterial smooth muscle and adventitia release pro-inflammatory mediators (IL-6, TNF-alpha, CXCL10) during atherosclerotic activity
+- These diffuse outward into perivascular fat and suppress adipocyte differentiation (inhibit PPARgamma, C/EBPalpha)
+- Result: adipocytes become smaller, less lipid-filled -> HU increases toward less-negative values
+
+**Paracrine signalling (fat -> vessel wall):**
+- In obese/metabolic syndrome states, PVAT shifts from secreting vasodilatory (adiponectin, NO) to pro-inflammatory (IL-6, TNF-alpha, FABP4) mediators
+- This creates a bidirectional amplification loop that accelerates plaque development
+
+### 8.3 PCAT vs. Epicardial Adipose Tissue
+
+| Feature | Pericoronary AT (PCAT) | Epicardial AT (EAT) |
+|---|---|---|
+| Location | Immediately adjacent to vessel wall | Entire fat depot within pericardium |
+| Measurement | HU attenuation in fixed VOI per vessel | Total volume (cm3) within pericardial sac |
+| Inflammation signal | Direct (per-vessel FAI) | Indirect (whole depot mean HU) |
+| Clinical tool | CaRi-Heart (Caristo), ShuKun | EAT volume tools |
+
+### 8.4 Limitations and Open Questions
+
+1. **Partial volume effects**: Sub-mm coronary vessels are near the spatial resolution limit of CT. Small vessels (LCX, LAD diagonals) have worse SNR.
+2. **Cardiac motion artifact**: Motion-blurred voxels partially outside fat range may bias FAI.
+3. **Threshold generalisability**: The -70.1 HU FAI cut-off was established on conventional 120 kVp CT; validation on spectral VMI data is an active research area.
+4. **LCX underestimation**: The LCX runs adjacent to the left atrial wall; VOI frequently overlaps non-adipose tissue (consistent with our low LCX voxel count of 639 vs. 13,784 for LAD).
+
+---
+
+## 9. Simulation Study Context
+
+### 9.1 Purpose of Our Pipeline
+
+The immediate application context is a **simulation study** characterising PCAT quantification accuracy on CCTA images acquired from a phantom or computational model. The pipeline serves as the measurement tool: given a known ground-truth fat distribution, how accurately does the FAI extraction reproduce the known HU values?
+
+Key validation questions:
+- Does the VOI construction correctly capture the pericoronary fat shell?
+- How does spatial resolution affect FAI accuracy at the coronary scale (vessel diameter ~3 mm)?
+- What is the sensitivity to centerline positioning error (e.g., 1 mm offset)?
+
+### 9.2 Material Decomposition Connection
+
+If the phantom is scanned on a spectral or dual-energy CT, the simulation study could directly test **water-lipid decomposition** as a PCAT measurement method — comparing conventional FAI (integrated HU) to spectral lipid map HU against known ground-truth composition. This would be the first study directly comparing the two methods for PCAT quantification.
+
+---
+
+## 10. Summary Table: Key Papers by Topic
+
+| Topic | Paper | Year | Key Contribution |
+|---|---|---|---|
+| FAI foundational | Oikonomou et al., *Lancet* | 2018 | FAI definition, -70.1 HU cut-off, CRISP-CT validation |
+| FAI AI score | Oikonomou et al., *Nat CV Res* | 2023 | CaRi-Heart AI score, ORFAN trial |
+| PCAT radiomics | Huang et al., PMID 41163958 | 2025 | 93-feature radiomic MACE prediction (ShuKun) |
+| Siemens syngo.via | Weichsel et al., *Eur Radiol* | 2024 | Tool comparison: DL reduces variability 10x |
+| Inflammation trial | Ridker et al., *NEJM* (CANTOS) | 2017 | Causal role of IL-1beta in MACE |
+| Coronary centerline | Schaap et al., *Med Image Anal* | 2009 | Rotterdam benchmark framework |
+| DL centerline | Zhang et al., PMID 39888471 | 2025 | Deep RL: OV=95.7%, speed=seconds |
+| Spectral CT review | Eveson et al., *Br J Radiol* | 2026 | AI integration + quantitative PCAT review |
+| PCD-CT plaque | Engel et al., *J Clin Med* | 2026 | FAI >= -70.1 HU and plaque composition |

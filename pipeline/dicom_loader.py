@@ -3,7 +3,7 @@ dicom_loader.py
 Load a DICOM series folder → 3D HU numpy array + spatial metadata dict.
 
 Handles Siemens syngo.via exports:
-  - RescaleIntercept = -8192  (non-standard, must add back after -1024 HU air normalization)
+  - RescaleIntercept = -8192  (Siemens FOV-fill sentinel, clamped to -1024 air on load)
   - Axial orientation [1,0,0,0,1,0]
   - Sub-mm isotropic voxels
 """
@@ -83,11 +83,22 @@ def load_dicom_series(dicom_dir: str | Path) -> Tuple[np.ndarray, Dict[str, Any]
     rescale_slope = float(getattr(ref, "RescaleSlope", 1.0))
     rescale_intercept = float(getattr(ref, "RescaleIntercept", -1024.0))
 
+    # Siemens sentinel value (-8192 HU) marks pixels outside the scan FOV.
+    # These are not real tissue — clamp them to -1024 HU (air) so they don't
+    # corrupt VOI stats, fat thresholding, or vessel detection.
+    # Also hard-clip extreme high HU (> 3095) which are scanner artefacts.
+    SENTINEL_HU  = -8192.0
+    HU_AIR       = -1024.0
+    HU_MAX_VALID =  3095.0
     # Build 3D array
     volume = np.zeros((len(slices), rows, cols), dtype=np.float32)
     for i, ds in enumerate(slices):
         raw = ds.pixel_array.astype(np.float32)
-        hu = raw * rescale_slope + rescale_intercept
+        hu  = raw * rescale_slope + rescale_intercept
+        # Replace FOV-fill sentinel with air
+        hu[hu <= SENTINEL_HU + 1] = HU_AIR
+        # Clip implausibly high values (metal artefact limit)
+        hu = np.clip(hu, HU_AIR, HU_MAX_VALID)
         volume[i] = hu
 
     meta = {

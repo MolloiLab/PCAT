@@ -493,6 +493,240 @@ def _extract_centerline_dijkstra(
     return np.array(centerline_ijk)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Vessel auto-tracer (greedy beam-search)
+# Used when waypoints are too close to ostium
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _autotrace_vessel(
+    volume: np.ndarray,
+    spacing_mm: List[float],
+    ostium_ijk: List[int],
+    direction_hint: np.ndarray,
+    trace_length_mm: float = 60.0,
+    hu_vessel_thresh: float = 200.0,
+    search_radius_mm: float = 2.0,
+    step_mm: float = 0.5,
+) -> np.ndarray:
+    """
+    Greedy momentum-guided vessel tracer.
+
+    Walks the vessel from *ostium_ijk* by repeating:
+      1. Predict next position = current + momentum * step.
+      2. Collect candidate voxels in a sphere of *search_radius_mm*
+         that are (a) brighter than *hu_vessel_thresh* AND
+         (b) in the forward half-space (dot with momentum > -0.3*radius).
+      3. Among candidates, pick the one with the highest HU.
+      4. Update momentum via EMA of recent step directions.
+      5. Stop when no bright forward candidate is found.
+
+    Using *search_radius_mm* = 2 mm (~5 vox at 0.38 mm spacing) prevents
+    the tracer jumping to the aorta or cardiac chambers.
+    Parameters
+    ----------
+    volume           : (Z,Y,X) float32 HU array
+    spacing_mm       : [sz, sy, sx]
+    ostium_ijk       : starting voxel [z, y, x]
+    direction_hint   : initial marching direction (z,y,x), need not be unit
+    trace_length_mm  : how far to trace from ostium (mm)
+    hu_vessel_thresh : minimum HU for vessel lumen detection
+    search_radius_mm : search ball radius (mm) -- keep small (1.5-2 mm)
+    step_mm          : arc step size (mm)
+    -------
+    path : (N, 3) int array [z, y, x], ordered from ostium
+    """
+    sp = np.array(spacing_mm, dtype=np.float64)
+    mean_sp = float(np.mean(sp))
+    shape = np.array(volume.shape, dtype=np.int64)
+    r_vox = max(1, int(np.ceil(search_radius_mm / mean_sp)))
+    n_steps = int(np.ceil(trace_length_mm / step_mm))
+    # Snap ostium to nearest local HU maximum within 3 mm (handles off-centre seeds)
+    snap_r = max(1, int(np.round(3.0 / mean_sp)))
+    oz, oy, ox = int(ostium_ijk[0]), int(ostium_ijk[1]), int(ostium_ijk[2])
+    z0s = int(np.clip(oz - snap_r, 0, shape[0]-1))
+    z1s = int(np.clip(oz + snap_r + 1, 0, shape[0]))
+    y0s = int(np.clip(oy - snap_r, 0, shape[1]-1))
+    y1s = int(np.clip(oy + snap_r + 1, 0, shape[1]))
+    x0s = int(np.clip(ox - snap_r, 0, shape[2]-1))
+    x1s = int(np.clip(ox + snap_r + 1, 0, shape[2]))
+    snap_patch = volume[z0s:z1s, y0s:y1s, x0s:x1s]
+    si = np.unravel_index(int(snap_patch.argmax()), snap_patch.shape)
+    snapped = np.array([z0s + si[0], y0s + si[1], x0s + si[2]], dtype=np.int64)
+    d = direction_hint.astype(np.float64).copy()
+    if np.linalg.norm(d) < 1e-6:
+        d = np.array([-1.0, 0.0, 0.0])
+    # Convert hint to mm-space then normalise
+    d_mm = d * sp
+    if np.linalg.norm(d_mm) < 1e-6:
+        d_mm = d.copy()
+    d_mm = d_mm / np.linalg.norm(d_mm)
+
+    pos = snapped.astype(np.float64)
+    path_vox: List[np.ndarray] = [snapped.copy()]
+    momentum = d_mm.copy()  # unit vector in mm-space
+    alpha = 0.75  # EMA weight: higher = smoother / more inertia
+    for _ in range(n_steps):
+        # Predict next position in voxel-space
+        step_vox = momentum * (step_mm / sp)  # mm direction / mm-per-vox
+        pred = pos + step_vox
+        pred_vox = np.round(pred).astype(np.int64)
+        z0 = int(np.clip(pred_vox[0] - r_vox, 0, shape[0] - 1))
+        z1 = int(np.clip(pred_vox[0] + r_vox + 1, 0, shape[0]))
+        y0 = int(np.clip(pred_vox[1] - r_vox, 0, shape[1] - 1))
+        y1 = int(np.clip(pred_vox[1] + r_vox + 1, 0, shape[1]))
+        x0 = int(np.clip(pred_vox[2] - r_vox, 0, shape[2] - 1))
+        x1 = int(np.clip(pred_vox[2] + r_vox + 1, 0, shape[2]))
+        patch = volume[z0:z1, y0:y1, x0:x1]
+        if patch.size == 0:
+            break
+
+        # Offset vectors from current pos (mm-space)
+        gz, gy, gx = np.ogrid[z0:z1, y0:y1, x0:x1]
+        dz_mm = (gz - pos[0]) * sp[0]
+        dy_mm = (gy - pos[1]) * sp[1]
+        dx_mm = (gx - pos[2]) * sp[2]
+        dist_sq = dz_mm**2 + dy_mm**2 + dx_mm**2
+        # Forward half-space: dot(offset_mm, momentum) > -0.3*radius
+        dot_val = dz_mm * momentum[0] + dy_mm * momentum[1] + dx_mm * momentum[2]
+        sphere_mask = dist_sq <= (search_radius_mm ** 2)
+        forward_mask = dot_val > (-0.3 * search_radius_mm)
+        bright_mask = patch >= hu_vessel_thresh
+        candidate_mask = sphere_mask & forward_mask & bright_mask
+
+        if not candidate_mask.any():
+            break  # lost the vessel
+
+        masked_hu = np.where(candidate_mask, patch, -np.inf)
+        idx = np.unravel_index(int(masked_hu.argmax()), masked_hu.shape)
+        best_vox = np.array([z0 + idx[0], y0 + idx[1], x0 + idx[2]], dtype=np.int64)
+        # Update momentum in mm-space
+        step_vec_mm = (best_vox.astype(np.float64) - pos) * sp
+        step_norm = np.linalg.norm(step_vec_mm)
+        if step_norm > 1e-6:
+            step_dir = step_vec_mm / step_norm
+            momentum = alpha * momentum + (1 - alpha) * step_dir
+            m_norm = np.linalg.norm(momentum)
+            if m_norm > 1e-6:
+                momentum = momentum / m_norm
+        pos = best_vox.astype(np.float64)
+        if not np.array_equal(best_vox, path_vox[-1]):
+            path_vox.append(best_vox.copy())
+    return np.array(path_vox, dtype=int)
+
+
+def _find_vessel_direction(
+    volume: np.ndarray,
+    spacing_mm: List[float],
+    ostium_ijk: List[int],
+    hint_direction: Optional[np.ndarray] = None,
+    probe_mm: float = 5.0,
+    hu_vessel_thresh: float = 200.0,
+) -> np.ndarray:
+    """
+    Find the best initial marching direction from the ostium.
+
+    Probes 26 directions (cube faces/edges/corners) of radius *probe_mm*
+    from the snapped ostium, scores each by summing HU of bright voxels
+    (> hu_vessel_thresh) along the probe ray, and returns the best direction.
+    If *hint_direction* is given, it is included as an extra probe candidate.
+
+    Returns unit vector in voxel-index space [z, y, x].
+    """
+    sp = np.array(spacing_mm, dtype=np.float64)
+    mean_sp = float(np.mean(sp))
+    shape = np.array(volume.shape, dtype=np.int64)
+
+    # Snap ostium to local HU max within 3mm
+    snap_r = max(1, int(np.round(3.0 / mean_sp)))
+    oz, oy, ox = int(ostium_ijk[0]), int(ostium_ijk[1]), int(ostium_ijk[2])
+    z0s = int(np.clip(oz - snap_r, 0, shape[0] - 1))
+    z1s = int(np.clip(oz + snap_r + 1, 0, shape[0]))
+    y0s = int(np.clip(oy - snap_r, 0, shape[1] - 1))
+    y1s = int(np.clip(oy + snap_r + 1, 0, shape[1]))
+    x0s = int(np.clip(ox - snap_r, 0, shape[2] - 1))
+    x1s = int(np.clip(ox + snap_r + 1, 0, shape[2]))
+    snap_patch = volume[z0s:z1s, y0s:y1s, x0s:x1s]
+    si = np.unravel_index(int(snap_patch.argmax()), snap_patch.shape)
+    snapped = np.array([z0s + si[0], y0s + si[1], x0s + si[2]], dtype=np.float64)
+
+    # Build 26 probe directions in mm-space (unit vectors)
+    offsets_26 = np.array(
+        [(dz, dy, dx)
+         for dz in (-1, 0, 1)
+         for dy in (-1, 0, 1)
+         for dx in (-1, 0, 1)
+         if not (dz == 0 and dy == 0 and dx == 0)],
+        dtype=np.float64,
+    )
+    dirs_mm = offsets_26 * sp[np.newaxis, :]
+    norms = np.linalg.norm(dirs_mm, axis=1, keepdims=True)
+    dirs_mm = dirs_mm / norms
+
+    # Add hint direction if given
+    if hint_direction is not None:
+        h = np.array(hint_direction, dtype=np.float64)
+        h_mm = h * sp
+        h_norm = np.linalg.norm(h_mm)
+        if h_norm > 1e-6:
+            dirs_mm = np.vstack([dirs_mm, h_mm / h_norm])
+
+    # Score each direction: sum HU of bright voxels along probe_mm ray, step 0.5mm
+    ray_steps = max(3, int(probe_mm / 0.5))
+    best_score = -np.inf
+    best_dir_mm = dirs_mm[0]
+    for d_mm in dirs_mm:
+        score = 0.0
+        for s in range(1, ray_steps + 1):
+            t = s * 0.5  # mm
+            pt = snapped + d_mm * (t / sp)  # voxel position
+            iz = int(np.round(pt[0]))
+            iy = int(np.round(pt[1]))
+            ix = int(np.round(pt[2]))
+            if not (0 <= iz < shape[0] and 0 <= iy < shape[1] and 0 <= ix < shape[2]):
+                break
+            hu = float(volume[iz, iy, ix])
+            if hu >= hu_vessel_thresh:
+                score += hu
+        if score > best_score:
+            best_score = score
+            best_dir_mm = d_mm
+
+    # Return as unit vector in voxel-index space
+    best_vox = best_dir_mm / sp
+    norm_vox = np.linalg.norm(best_vox)
+    return best_vox / norm_vox if norm_vox > 1e-6 else np.array([-1.0, 0.0, 0.0])
+
+
+def _sample_waypoints_from_path(
+    path: np.ndarray,
+    spacing_mm: List[float],
+    step_mm: float = 5.0,
+) -> List[List[int]]:
+    """
+    Sub-sample a dense path into waypoints spaced ~step_mm apart.
+    Returns a list of [z, y, x] integer lists (excludes the first point,
+    which is the ostium already known to the caller).
+    """
+    if len(path) < 2:
+        return []
+    sp = np.array(spacing_mm, dtype=np.float64)
+    diffs = np.diff(path.astype(np.float64), axis=0) * sp
+    seg_len = np.linalg.norm(diffs, axis=1)
+    cumlen = np.concatenate([[0.0], np.cumsum(seg_len)])
+    total = float(cumlen[-1])
+    waypoints: List[List[int]] = []
+    d = step_mm
+    while d < total:
+        idx = int(np.searchsorted(cumlen, d, side='left'))
+        idx = min(idx, len(path) - 1)
+        waypoints.append(path[idx].tolist())
+        d += step_mm
+    # Always include the final traced point
+    if len(waypoints) == 0 or not np.array_equal(waypoints[-1], path[-1].tolist()):
+        waypoints.append(path[-1].tolist())
+    return waypoints
+
+
 # ─────────────────────────────────────────────
 # Public API: extract_centerline_seeds
 # (dispatches to FMM or Dijkstra automatically)
@@ -505,26 +739,27 @@ def extract_centerline_seeds(
     ostium_ijk: List[int],
     waypoints_ijk: List[List[int]],
     roi_radius_mm: float = 35.0,
+    min_guide_mm: float = 8.0,
 ) -> np.ndarray:
     """
     Extract centerline from ostium through waypoints.
-
-    Uses Fast Marching (scikit-fmm) when available — 3–10× faster than
     Dijkstra with no graph construction overhead.  Falls back to vectorised
     Dijkstra if scikit-fmm is not installed.
-
-    The cost/speed of each voxel is derived from the vesselness map so the
-    path prefers high-vesselness regions (the vessel interior).
-
+    When the provided waypoints are clustered too close to the ostium
+    (total arc < *min_guide_mm*), the function automatically traces the
+    vessel with a greedy beam-search (``_autotrace_vessel``) and substitutes
+    the resulting path as dense guide waypoints before running the main
+    tracker.  This fixes cases where manually placed waypoints are within
+    1–2 mm of the ostium and give the tracker no direction to follow.
     Parameters
     ----------
-    volume        : (Z, Y, X) float32 HU array (kept for API consistency)
+    volume        : (Z, Y, X) float32 HU array
     vesselness    : (Z, Y, X) float32 vesselness map
     spacing_mm    : [z, y, x] voxel spacing in mm
     ostium_ijk    : [z, y, x] ostium voxel
     waypoints_ijk : list of [z, y, x] waypoints
     roi_radius_mm : half-size of ROI cube around seeds (mm)
-
+    min_guide_mm  : minimum total waypoint arc (mm) before auto-tracing kicks in
     Returns
     -------
     centerline_ijk : (N, 3) array of ordered centerline voxel indices (z, y, x)
@@ -532,8 +767,48 @@ def extract_centerline_seeds(
     sp = np.array(spacing_mm, dtype=np.float64)
     mean_sp = float(np.mean(sp))
     all_pts = [ostium_ijk] + list(waypoints_ijk)
-    # Expected arc from waypoint straight-line distances
+    # ── Check if waypoints are too close to ostium ────────────────────────
+    # Compute total straight-line arc spanned by the provided seeds.
     pts_mm = np.array(all_pts, dtype=np.float64) * sp
+    seed_arc_mm = float(np.linalg.norm(np.diff(pts_mm, axis=0), axis=1).sum()) if len(all_pts) > 1 else 0.0
+
+    if seed_arc_mm < min_guide_mm:
+        import warnings
+        warnings.warn(
+            f"Waypoints too close to ostium (arc={seed_arc_mm:.1f}mm < {min_guide_mm}mm). "
+            f"Auto-tracing vessel from ostium to generate guide waypoints.",
+            RuntimeWarning,
+        )
+        # Use _find_vessel_direction to probe all 26 directions from ostium
+        # — do NOT rely on waypoints[0]-ostium which may point the wrong way
+        hint = None
+        if len(waypoints_ijk) > 0:
+            hint = (np.array(waypoints_ijk[0], dtype=np.float64)
+                    - np.array(ostium_ijk, dtype=np.float64))
+        d_hint = _find_vessel_direction(
+            volume=volume,
+            spacing_mm=spacing_mm,
+            ostium_ijk=ostium_ijk,
+            hint_direction=hint,
+        )
+
+        traced = _autotrace_vessel(
+            volume=volume,
+            spacing_mm=spacing_mm,
+            ostium_ijk=ostium_ijk,
+            direction_hint=d_hint,
+            trace_length_mm=60.0,
+        )
+        if len(traced) >= 5:
+            waypoints_ijk = _sample_waypoints_from_path(traced, spacing_mm, step_mm=5.0)
+            all_pts = [ostium_ijk] + waypoints_ijk
+            pts_mm = np.array(all_pts, dtype=np.float64) * sp
+            seed_arc_mm = float(np.linalg.norm(np.diff(pts_mm, axis=0), axis=1).sum())
+            print(f"[centerline] Auto-traced {len(traced)} pts ({seed_arc_mm:.1f}mm); "
+                  f"using {len(waypoints_ijk)} guide waypoints.")
+        else:
+            print(f"[centerline] WARNING: auto-trace returned only {len(traced)} pts — vessel may be too dim")
+    # Expected arc from waypoint straight-line distances
     expected_arc_mm = float(np.linalg.norm(np.diff(pts_mm, axis=0), axis=1).sum())
     min_pts_expected = max(10, int(expected_arc_mm / mean_sp / 4))
     if HAS_SKFMM:
@@ -541,18 +816,14 @@ def extract_centerline_seeds(
     else:
         cl = _extract_centerline_dijkstra(vesselness, spacing_mm, ostium_ijk, waypoints_ijk, roi_radius_mm)
     cl_arc_mm = float(np.linalg.norm(np.diff(cl.astype(np.float64) * sp, axis=0), axis=1).sum()) if len(cl) > 1 else 0.0
-
-    # Quality check: verify the centerline endpoint is near the final waypoint.
-    # FMM gradient descent can oscillate and end up far from the target waypoint.
     if len(cl) > 0:
         end_dist_mm = float(np.linalg.norm((cl[-1].astype(np.float64) - np.array(all_pts[-1], dtype=np.float64)) * sp))
-        cl_endpoint_ok = end_dist_mm < mean_sp * 40.0  # ≤13mm: accommodates snap_to_vessel 8mm shift
+        cl_endpoint_ok = end_dist_mm < mean_sp * 40.0
     else:
         cl_endpoint_ok = False
-
     use_linear = (len(cl) < min_pts_expected
                   or cl_arc_mm < expected_arc_mm * 0.20
-                  or cl_arc_mm > expected_arc_mm * 3.0   # oscillating (3× allows snapped waypoint detour)
+                  or cl_arc_mm > expected_arc_mm * 3.0
                   or not cl_endpoint_ok)
     if use_linear:
         import warnings

@@ -97,7 +97,6 @@ def export_combined_voi_nifti(
 # Main export function
 # ─────────────────────────────────────────────
 
-# Deprecated: use export_voi_nifti() instead
 def export_voi_raw(
     volume: np.ndarray,
     voi_mask: np.ndarray,
@@ -139,6 +138,13 @@ def export_voi_raw(
     info = np.iinfo(dtype)
     out_clipped = np.clip(out, info.min, info.max).astype(dtype)
 
+    # Flip Z axis so exported index 0 = superior (head), matching CT viewer
+    out_clipped = np.ascontiguousarray(np.flip(out_clipped, axis=0))
+
+    # Update origin to reflect: after flip, index 0 = last DICOM slice (head)
+    z_positions = meta.get("z_positions", [meta["origin_mm"][2]])
+    flipped_z_origin = float(z_positions[-1]) if len(z_positions) > 1 else float(meta["origin_mm"][2])
+
     # Write raw binary (C-order, Z-first — axial slices contiguous)
     raw_path = output_dir / f"{prefix}_voi.raw"
     out_clipped.tofile(str(raw_path))
@@ -154,7 +160,7 @@ def export_voi_raw(
         "sentinel_hu": int(sentinel_hu),
         "n_voi_voxels": int(voi_mask.sum()),
         "spacing_mm_zyx": meta["spacing_mm"],      # [z, y, x]
-        "origin_mm_xyz": meta["origin_mm"],        # [x, y, z] patient coords
+        "origin_mm_xyz": [meta["origin_mm"][0], meta["origin_mm"][1], flipped_z_origin],
         "orientation": meta["orientation"],
         "patient_id": meta.get("patient_id", ""),
         "series_description": meta.get("series_description", ""),
@@ -163,6 +169,23 @@ def export_voi_raw(
         "z_positions_mm": meta["z_positions"],
         "load_instructions": (
             "np.fromfile(raw_file, dtype=dtype).reshape(shape_zyx)"
+        ),
+        "z_axis_direction": "superior_to_inferior",  # index 0 = head after Z-flip
+        "x_axis_direction": "patient_right_to_left_in_image",  # col 0 = patient right
+        "imagej_import": {
+            "width": int(volume.shape[2]),
+            "height": int(volume.shape[1]),
+            "n_images": int(volume.shape[0]),
+            "type": "16-bit Signed",
+            "little_endian": True,
+            "gap_between_images": 0,
+            "note": "File > Import > Raw in ImageJ. Array is Z-first (C-order). Slice 1 = superior/head."
+        },
+        "orientation_note": (
+            "VOI array is exported Z-flipped: index 0 = superior (head), last index = inferior (foot). "
+            "This matches standard CT viewer convention (head at top). "
+            "X-axis col 0 = patient right (where RCA is). "
+            "Non-VOI voxels are set to sentinel_hu."
         ),
     }
 
@@ -181,7 +204,6 @@ def export_voi_raw(
 # Multi-vessel combined export
 # ─────────────────────────────────────────────
 
-# Deprecated: use export_combined_voi_nifti() instead
 def export_combined_voi_raw(
     volume: np.ndarray,
     vessel_masks: Dict[str, np.ndarray],

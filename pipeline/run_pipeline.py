@@ -67,6 +67,8 @@ from pipeline.export_raw import export_voi_raw, export_combined_voi_raw, export_
 from pipeline.visualize import (
     render_3d_voi,
     render_cpr_fai,
+    render_cpr_grayscale,
+    render_cpr_native,
     plot_hu_histogram,
     plot_radial_hu_profile,
     plot_summary,
@@ -365,14 +367,16 @@ def run_patient(
             f"(mean HU {stats['hu_mean']:.1f} vs threshold {threshold} HU)"
         )
 
-        # ── Export per-vessel NIfTI ─────────────────────────────────────
-        nii_path = export_voi_nifti(
+        # ── Export per-vessel .raw + metadata JSON ──────────────────────────
+        raw_path, json_path = export_voi_raw(
+            volume=volume,
             voi_mask=voi_mask,
-            spacing_mm=spacing_mm,
+            meta=meta,
             output_dir=output_dir,
             prefix=f"{prefix}_{vessel_name}",
         )
-        results["outputs"].append(str(nii_path))
+        results["outputs"].append(str(raw_path))
+        results["outputs"].append(str(json_path))
 
         # ── Visualizations ─────────────────────────────────────────────
         print(f"[pipeline] Generating {vessel_name} visualizations...")
@@ -389,6 +393,32 @@ def run_patient(
         )
         if cpr_path:
             results["outputs"].append(str(cpr_path))
+
+        # Output 3b: CPR grayscale multi-rotation
+        cpr_gray_path = render_cpr_grayscale(
+            volume=volume,
+            centerline_ijk=centerline,
+            radii_mm=radii_mm,
+            spacing_mm=spacing_mm,
+            vessel_name=vessel_name,
+            output_dir=output_dir,
+            prefix=prefix,
+        )
+        if cpr_gray_path:
+            results["outputs"].append(str(cpr_gray_path))
+
+        # Output 3c: CPR native (Syngo.via-style curved CPR, 3 rotation views)
+        cpr_native_paths = render_cpr_native(
+            volume=volume,
+            centerline_ijk=centerline,
+            radii_mm=radii_mm,
+            spacing_mm=spacing_mm,
+            vessel_name=vessel_name,
+            output_dir=output_dir,
+            prefix=prefix,
+        )
+        for p in (cpr_native_paths or []):
+            results["outputs"].append(str(p))
 
         # ── Interactive CPR browser (optional, skipped in headless mode) ──────────
         if not skip_cpr_browser:
@@ -438,14 +468,16 @@ def run_patient(
 
     # ── Step 4: Combined VOI export ───────────────────────────────────────
     if vessel_voi_masks:
-        print("\n[pipeline] Exporting combined all-vessel VOI NIfTI...")
-        combined_nii = export_combined_voi_nifti(
+        print("\n[pipeline] Exporting combined all-vessel VOI .raw...")
+        raw_path, json_path = export_combined_voi_raw(
+            volume=volume,
             vessel_masks=vessel_voi_masks,
-            spacing_mm=spacing_mm,
+            meta=meta,
             output_dir=output_dir,
             prefix=f"{prefix}_combined",
         )
-        results["outputs"].append(str(combined_nii))
+        results["outputs"].append(str(raw_path))
+        results["outputs"].append(str(json_path))
 
     # ── Step 5: 3D visualization ──────────────────────────────────────────
     if vessel_voi_masks and not skip_3d:

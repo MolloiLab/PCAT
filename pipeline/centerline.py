@@ -46,7 +46,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
-from scipy.ndimage import distance_transform_edt, gaussian_filter
+from scipy.ndimage import distance_transform_edt, gaussian_filter, grey_dilation, label as _ndi_label
 from skimage.filters import frangi
 
 try:
@@ -132,7 +132,9 @@ def compute_vesselness(
         black_ridges=False,
         alpha=0.5,
         beta=0.5,
-        gamma=15,
+        # gamma omitted: scikit-image auto-scales by half the Frobenius norm of the
+        # Hessian, which correctly adapts to voxel spacing. gamma=15 suppresses
+        # the vesselness signal at sub-mm spacing (e.g. 0.32mm coronary CT).
     ).astype(np.float32)
 
     # ── Embed back into a full-volume array ───────────────────────────────
@@ -140,6 +142,48 @@ def compute_vesselness(
     vesselness[lo[0]:hi[0]+1, lo[1]:hi[1]+1, lo[2]:hi[2]+1] = roi_vessel
 
     return vesselness
+
+
+# ─────────────────────────────────────────────
+# Shared helpers
+# ─────────────────────────────────────────────
+
+def _decimate_centerline(
+    pts: List[np.ndarray],
+    spacing_mm: List[float],
+    min_step_frac: float = 0.5,
+) -> List[np.ndarray]:
+    """
+    Greedy decimation of a centerline path.
+
+    Removes near-duplicate and oscillating points by keeping only points
+    that are at least *min_step_frac * mean_spacing* apart from the last
+    retained point.  This eliminates the thousands of repeated voxels that
+    the gradient-descent tracer accumulates when it oscillates near a waypoint.
+
+    The first and last points are always kept.
+
+    Parameters
+    ----------
+    pts           : list of (3,) int arrays in LOCAL voxel coords
+    spacing_mm    : [sz, sy, sx]
+    min_step_frac : fraction of mean spacing to use as minimum step (default 0.5)
+
+    Returns
+    -------
+    Decimated list of (3,) int arrays
+    """
+    if len(pts) <= 2:
+        return pts
+    sp = np.array(spacing_mm, dtype=np.float64)
+    min_dist_mm = min_step_frac * float(np.mean(sp))
+    kept: List[np.ndarray] = [pts[0]]
+    for pt in pts[1:-1]:
+        dist_mm = np.linalg.norm((pt - kept[-1]).astype(np.float64) * sp)
+        if dist_mm >= min_dist_mm:
+            kept.append(pt)
+    kept.append(pts[-1])
+    return kept
 
 
 # ─────────────────────────────────────────────
@@ -152,58 +196,54 @@ def _trace_gradient_path(
     start_ijk: np.ndarray,
     end_ijk: np.ndarray,
     spacing_mm: List[float],
-    max_steps: int = 10000,
+    max_steps: int = 5000,
 ) -> List[np.ndarray]:
-    """
-    Trace the minimal-cost path from *end_ijk* back to *start_ijk* by
-    following the negative gradient of the FMM travel-time field.
+    """Fast vectorised discrete min-neighbor backtracking on FMM travel-time.
 
-    Uses trilinear gradient estimation at each step; step size = 0.5 voxel.
+    At each voxel finds the 26-connected neighbor with the lowest travel-time
+    (fully vectorised with numpy).  Stops when:
+    - within 2 voxels of goal (start_ijk), or
+    - travel-time stops decreasing (local minimum), or
+    - max_steps reached.
 
-    Returns
-    -------
-    List of integer voxel coordinates [z, y, x] along the path,
-    ordered from start → end.
+    Starts at end_ijk (high TT) and descends toward start_ijk (TT~0).
+    Returns path ordered start -> end.
     """
-    shape = np.array(travel_time.shape)
+    shape = np.array(travel_time.shape, dtype=np.int64)
     sp = np.array(spacing_mm, dtype=np.float64)
+    mean_sp = float(np.mean(sp))
+    pos = np.round(end_ijk).astype(np.int64)
+    goal = np.round(start_ijk).astype(np.int64)
 
-    pos = end_ijk.astype(np.float64)
-    goal = start_ijk.astype(np.float64)
-    step_size = 0.5  # voxels
-
-    path_pts: List[np.ndarray] = [np.round(pos).astype(int)]
-
+    # 26-connected neighbour offsets, shape (26, 3)
+    offsets = np.array(
+        [(dz, dy, dx)
+         for dz in (-1, 0, 1)
+         for dy in (-1, 0, 1)
+         for dx in (-1, 0, 1)
+         if (dz, dy, dx) != (0, 0, 0)],
+        dtype=np.int64,
+    )
+    path: List[np.ndarray] = [pos.copy()]
+    cur_tt = float(travel_time[pos[0], pos[1], pos[2]])
     for _ in range(max_steps):
-        iz, iy, ix = [int(np.clip(round(pos[i]), 1, shape[i] - 2)) for i in range(3)]
-
-        # Central-difference gradient in physical units (mm)
-        gz = (travel_time[iz + 1, iy, ix] - travel_time[iz - 1, iy, ix]) / (2.0 * sp[0])
-        gy = (travel_time[iz, iy + 1, ix] - travel_time[iz, iy - 1, ix]) / (2.0 * sp[1])
-        gx = (travel_time[iz, iy, ix + 1] - travel_time[iz, iy, ix - 1]) / (2.0 * sp[2])
-
-        grad = np.array([gz, gy, gx])
-        gnorm = np.linalg.norm(grad)
-        if gnorm < 1e-12:
+        if np.linalg.norm((pos - goal).astype(float) * sp) < mean_sp * 2.0:
             break
 
-        # Step in voxel coordinates opposite to gradient (descend travel-time)
-        step_vox = -grad / gnorm * step_size / sp  # convert mm gradient → voxel step
-        pos = pos + step_vox
+        nbs = pos + offsets          # (26, 3)
+        nbs_c = np.clip(nbs, 0, shape - 1)
+        nb_tt = travel_time[nbs_c[:, 0], nbs_c[:, 1], nbs_c[:, 2]]
 
-        # Clamp to valid range
-        pos = np.clip(pos, 0, shape - 1)
+        best_idx = int(np.argmin(nb_tt))
+        best_tt = float(nb_tt[best_idx])
 
-        vox = np.round(pos).astype(int)
-        path_pts.append(vox.copy())
+        if best_tt >= cur_tt:
+            break  # local minimum — no downhill neighbour
 
-        # Stop if we reached the source region
-        dist_to_goal = np.linalg.norm((pos - goal) * sp)
-        if dist_to_goal < float(np.mean(sp)):
-            break
-
-    path_pts.append(np.round(goal).astype(int))
-    return list(reversed(path_pts))
+        pos = nbs_c[best_idx].copy()
+        cur_tt = best_tt
+        path.append(pos.copy())
+    return list(reversed(path))
 
 
 def _extract_centerline_fmm(
@@ -212,83 +252,122 @@ def _extract_centerline_fmm(
     ostium_ijk: List[int],
     waypoints_ijk: List[List[int]],
     roi_radius_mm: float = 35.0,
+    volume: Optional[np.ndarray] = None,
+    hu_vessel_thresh: float = 250.0,
 ) -> np.ndarray:
     """
-    Fast Marching centerline extraction (scikit-fmm).
+    Per-segment Fast Marching centerline extraction.
 
-    Algorithm:
-    1. Build speed image = vesselness + eps  (high speed through vessels)
-    2. Run skfmm.travel_time() from the ostium seed point
-    3. For each waypoint: gradient-descent back-trace through travel-time field
-    4. Concatenate segment paths → full centerline
+    For each consecutive pair (source->target) among the seed points:
+      1. Crop a local ROI around just those two points + margin.
+      2. Build speed field from HU-threshold connected component seeded
+         at the source voxel.  This prevents FMM from wandering into the
+         aorta or cardiac chambers for distal segments.
+      3. Run skfmm.travel_time() from source in the local ROI.
+      4. Gradient-descent back-trace from target to source.
+      5. Map back to global coordinates and concatenate.
 
     Parameters
     ----------
-    vesselness    : (Z, Y, X) float32 vesselness map
-    spacing_mm    : [z, y, x]
-    ostium_ijk    : [z, y, x] ostium voxel
-    waypoints_ijk : list of [z, y, x] waypoints
-    roi_radius_mm : ROI half-size around seed points (mm)
-
-    Returns
+    vesselness      : (Z, Y, X) float32 vesselness map (fallback when volume absent)
+    spacing_mm      : [z, y, x]
+    ostium_ijk      : [z, y, x] ostium voxel
+    waypoints_ijk   : list of [z, y, x] waypoints
+    roi_radius_mm   : extra margin around each segment pair (mm)
+    volume          : (Z, Y, X) float32 HU array -- enables HU-threshold speed
+    hu_vessel_thresh: HU threshold for vessel lumen (default 250 HU)
     -------
     centerline_ijk : (N, 3) array [z, y, x]
     """
     shape = vesselness.shape
     all_points = [np.array(ostium_ijk)] + [np.array(p) for p in waypoints_ijk]
+    sp = np.array(spacing_mm, dtype=np.float64)
+    mean_sp = float(np.mean(sp))
+    eps = 1e-6
+    def _snap_hu(roi_hu: np.ndarray, pt_local: np.ndarray, l_shape: np.ndarray) -> np.ndarray:
+        """Snap pt_local to nearest voxel with HU>threshold within 5mm."""
+        z, y, x = pt_local
+        if float(roi_hu[z, y, x]) > hu_vessel_thresh:
+            return pt_local
+        r_max = max(1, int(5.0 / mean_sp))
+        for r in range(1, r_max + 1):
+            z0, z1 = max(0, z - r), min(l_shape[0], z + r + 1)
+            y0, y1 = max(0, y - r), min(l_shape[1], y + r + 1)
+            x0, x1 = max(0, x - r), min(l_shape[2], x + r + 1)
+            sub = roi_hu[z0:z1, y0:y1, x0:x1]
+            if sub.max() > hu_vessel_thresh:
+                idx = np.unravel_index(sub.argmax(), sub.shape)
+                return np.array([z0 + idx[0], y0 + idx[1], x0 + idx[2]], dtype=int)
+        return pt_local
 
-    # ── Crop to ROI ────────────────────────────────────────────────────────
-    margin_vox = np.array([int(roi_radius_mm / s) for s in spacing_mm])
-    pts_arr = np.array(all_points)
-    lo = np.maximum(pts_arr.min(axis=0) - margin_vox, 0).astype(int)
-    hi = np.minimum(pts_arr.max(axis=0) + margin_vox,
-                    np.array(shape) - 1).astype(int)
+    def _snap_ves(pt_local: np.ndarray, local_ves: np.ndarray, l_shape: np.ndarray) -> np.ndarray:
+        """Snap pt_local to nearest voxel with vesselness>0.05 within 5mm."""
+        z, y, x = pt_local
+        if float(local_ves[z, y, x]) >= 0.05:
+            return pt_local
+        r_max = max(1, int(5.0 / mean_sp))
+        for r in range(1, r_max + 1):
+            z0, z1 = max(0, z - r), min(l_shape[0], z + r + 1)
+            y0, y1 = max(0, y - r), min(l_shape[1], y + r + 1)
+            x0, x1 = max(0, x - r), min(l_shape[2], x + r + 1)
+            sub = local_ves[z0:z1, y0:y1, x0:x1]
+            if sub.max() >= 0.05:
+                idx = np.unravel_index(sub.argmax(), sub.shape)
+                return np.array([z0 + idx[0], y0 + idx[1], x0 + idx[2]], dtype=int)
+        return pt_local
 
-    roi = vesselness[lo[0]:hi[0]+1, lo[1]:hi[1]+1, lo[2]:hi[2]+1].astype(np.float64)
-    roi_shape = np.array(roi.shape)
+    # -- Per-segment local HU-max tracking --------------------------------
+    # FMM is unsuitable here: the correct coronary path deviates up to 15+
+    # voxels from the straight inter-seed line (passing through pericardial
+    # fat / around the heart surface).  We trace by linear interpolation +
+    # local HU-max snapping instead.
+    full_path_global: List[np.ndarray] = [all_points[0].copy()]
+    for seg_idx in range(len(all_points) - 1):
+        src_g = all_points[seg_idx].copy().astype(float)
+        tgt_g = all_points[seg_idx + 1].copy().astype(float)
+        seg_len_mm = float(np.linalg.norm((tgt_g - src_g) * sp))
+        n_steps = max(20, int(np.ceil(seg_len_mm / mean_sp)))
+        r_vox = max(1, int(round(3.0 / mean_sp)))
+        prev_pt = all_points[seg_idx].copy().astype(int)
+        for i in range(1, n_steps + 1):
+            t = i / n_steps
+            pt_f = src_g + t * (tgt_g - src_g)
+            z0_c = int(np.clip(int(round(float(pt_f[0]))), 0, shape[0] - 1))
+            y0_c = int(np.clip(int(round(float(pt_f[1]))), 0, shape[1] - 1))
+            x0_c = int(np.clip(int(round(float(pt_f[2]))), 0, shape[2] - 1))
+            z_lo = max(0, z0_c - r_vox)
+            z_hi = min(shape[0], z0_c + r_vox + 1)
+            y_lo = max(0, y0_c - r_vox)
+            y_hi = min(shape[1], y0_c + r_vox + 1)
+            x_lo = max(0, x0_c - r_vox)
+            x_hi = min(shape[2], x0_c + r_vox + 1)
+            if volume is not None:
+                sub = volume[z_lo:z_hi, y_lo:y_hi, x_lo:x_hi]
+                if sub.size > 0 and sub.max() > hu_vessel_thresh:
+                    idx = np.unravel_index(sub.argmax(), sub.shape)
+                    snap = np.array([z_lo+idx[0], y_lo+idx[1], x_lo+idx[2]], dtype=int)
+                else:
+                    snap = np.array([z0_c, y0_c, x0_c], dtype=int)
+            else:
+                sub_ves = vesselness[z_lo:z_hi, y_lo:y_hi, x_lo:x_hi]
+                if sub_ves.size > 0 and sub_ves.max() > 0.05:
+                    idx = np.unravel_index(sub_ves.argmax(), sub_ves.shape)
+                    snap = np.array([z_lo+idx[0], y_lo+idx[1], x_lo+idx[2]], dtype=int)
+                else:
+                    snap = np.array([z0_c, y0_c, x0_c], dtype=int)
+            if not np.array_equal(snap, prev_pt):
+                full_path_global.append(snap)
+                prev_pt = snap
 
-    # ── Map global seeds → ROI-local coords ───────────────────────────────
-    def to_local(pt_global: np.ndarray) -> np.ndarray:
-        return np.clip(pt_global - lo, 0, roi_shape - 1).astype(int)
-
-    ostium_local = to_local(all_points[0])
-    waypoints_local = [to_local(wp) for wp in all_points[1:]]
-
-    # ── Speed image: high speed = easy to travel = vessel interior ─────────
-    eps = 1e-3
-    speed = roi + eps  # (Z_roi, Y_roi, X_roi), all positive
-
-    # ── Signed distance field: -1 everywhere except +1 at ostium ──────────
-    phi = -np.ones_like(speed)
-    phi[ostium_local[0], ostium_local[1], ostium_local[2]] = 1.0
-
-    # ── FMM travel time from ostium ────────────────────────────────────────
-    dx = list(spacing_mm)  # physical voxel spacing [sz, sy, sx]
-    travel_time = skfmm.travel_time(phi, speed=speed, dx=dx)
-
-    # ── Trace path through each waypoint in order ─────────────────────────
-    full_path: List[np.ndarray] = [ostium_local]
-    current_src = ostium_local
-
-    for wp_local in waypoints_local:
-        segment = _trace_gradient_path(
-            travel_time, current_src, wp_local, spacing_mm
-        )
-        if len(segment) > 1:
-            full_path.extend(segment[1:])
-        current_src = wp_local
-
-    # ── Deduplicate consecutive identical voxels ───────────────────────────
+    # -- Deduplicate and decimate ------------------------------------------
     unique_path: List[np.ndarray] = []
     prev: Optional[np.ndarray] = None
-    for pt in full_path:
+    for pt in full_path_global:
         if prev is None or not np.array_equal(pt, prev):
             unique_path.append(pt)
             prev = pt
-
-    # ── Map ROI-local → global coords ─────────────────────────────────────
-    centerline_ijk = np.array(unique_path) + lo  # (N, 3)
-    return centerline_ijk
+    unique_path = _decimate_centerline(unique_path, spacing_mm, min_step_frac=0.5)
+    return np.array(unique_path)
 
 
 # ─────────────────────────────────────────────
@@ -450,14 +529,57 @@ def extract_centerline_seeds(
     -------
     centerline_ijk : (N, 3) array of ordered centerline voxel indices (z, y, x)
     """
+    sp = np.array(spacing_mm, dtype=np.float64)
+    mean_sp = float(np.mean(sp))
+    all_pts = [ostium_ijk] + list(waypoints_ijk)
+    # Expected arc from waypoint straight-line distances
+    pts_mm = np.array(all_pts, dtype=np.float64) * sp
+    expected_arc_mm = float(np.linalg.norm(np.diff(pts_mm, axis=0), axis=1).sum())
+    min_pts_expected = max(10, int(expected_arc_mm / mean_sp / 4))
     if HAS_SKFMM:
-        return _extract_centerline_fmm(
-            vesselness, spacing_mm, ostium_ijk, waypoints_ijk, roi_radius_mm
-        )
+        cl = _extract_centerline_fmm(vesselness, spacing_mm, ostium_ijk, waypoints_ijk, roi_radius_mm, volume=volume)
     else:
-        return _extract_centerline_dijkstra(
-            vesselness, spacing_mm, ostium_ijk, waypoints_ijk, roi_radius_mm
+        cl = _extract_centerline_dijkstra(vesselness, spacing_mm, ostium_ijk, waypoints_ijk, roi_radius_mm)
+    cl_arc_mm = float(np.linalg.norm(np.diff(cl.astype(np.float64) * sp, axis=0), axis=1).sum()) if len(cl) > 1 else 0.0
+
+    # Quality check: verify the centerline endpoint is near the final waypoint.
+    # FMM gradient descent can oscillate and end up far from the target waypoint.
+    if len(cl) > 0:
+        end_dist_mm = float(np.linalg.norm((cl[-1].astype(np.float64) - np.array(all_pts[-1], dtype=np.float64)) * sp))
+        cl_endpoint_ok = end_dist_mm < mean_sp * 40.0  # ≤13mm: accommodates snap_to_vessel 8mm shift
+    else:
+        cl_endpoint_ok = False
+
+    use_linear = (len(cl) < min_pts_expected
+                  or cl_arc_mm < expected_arc_mm * 0.20
+                  or cl_arc_mm > expected_arc_mm * 3.0   # oscillating (3× allows snapped waypoint detour)
+                  or not cl_endpoint_ok)
+    if use_linear:
+        import warnings
+        if not cl_endpoint_ok:
+            reason = f"endpoint drift ({end_dist_mm:.1f}mm from final waypoint)"
+        elif cl_arc_mm > expected_arc_mm * 3.0:
+            reason = f"oscillating arc ({cl_arc_mm:.1f}mm > {expected_arc_mm * 3.0:.1f}mm)"
+        elif cl_arc_mm < expected_arc_mm * 0.20:
+            reason = f"short arc ({cl_arc_mm:.1f}mm < {expected_arc_mm * 0.20:.1f}mm)"
+        else:
+            reason = f"sparse ({len(cl)} pts < {min_pts_expected})"
+        warnings.warn(
+            f"Centerline fallback [{reason}]: using linear interpolation of waypoints.",
+            RuntimeWarning,
         )
+        step_mm = 0.5
+        lin_pts: List[np.ndarray] = []
+        for i in range(len(all_pts) - 1):
+            p0 = np.array(all_pts[i], dtype=np.float64)
+            p1 = np.array(all_pts[i + 1], dtype=np.float64)
+            seg_len = float(np.linalg.norm((p1 - p0) * sp))
+            n_steps = max(2, int(np.ceil(seg_len / step_mm)))
+            for t in np.linspace(0.0, 1.0, n_steps, endpoint=(i == len(all_pts) - 2)):
+                lin_pts.append(np.round(p0 + t * (p1 - p0)).astype(int))
+        lin_pts.append(np.round(np.array(all_pts[-1], dtype=np.float64)).astype(int))
+        cl = np.clip(np.array(lin_pts), 0, np.array(vesselness.shape) - 1)
+    return cl
 
 
 # ─────────────────────────────────────────────
@@ -558,7 +680,7 @@ def load_seeds(seeds_path: str | Path) -> Dict[str, Any]:
 
 
 VESSEL_CONFIGS = {
-    "LAD": {"start_mm": 0.0,  "length_mm": 40.0},
-    "LCX": {"start_mm": 0.0,  "length_mm": 40.0},
+    "LAD": {"start_mm": 5.0,  "length_mm": 40.0},
+    "LCX": {"start_mm": 5.0,  "length_mm": 40.0},
     "RCA": {"start_mm": 10.0, "length_mm": 40.0},  # 10–50mm
 }

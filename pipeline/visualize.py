@@ -106,10 +106,16 @@ def render_3d_voi(
     voi_surface = pv_grid.threshold(0.5, scalars="voi").extract_surface(algorithm="dataset_surface")
 
     # ── Attach HU scalars on the VOI surface ────────────────────────────
-    # Clip to fat range for coloring
+    # Create a fat-only mask: voi AND hu in fat range
     hu_vtk = np.clip(volume.transpose(2, 1, 0).flatten(order="C"), FAI_HU_MIN, FAI_HU_MAX).astype(np.float32)
     pv_grid.cell_data["hu"] = hu_vtk
+    
+    # Create fat-only mask: voi AND hu in fat range
+    fat_only_vtk = ((voi_mask & (volume >= FAI_HU_MIN) & (volume <= FAI_HU_MAX))
+                    .transpose(2, 1, 0).flatten(order="C").astype(np.uint8))
+    pv_grid.cell_data["fat_only"] = fat_only_vtk
     voi_fat_cells = pv_grid.threshold(0.5, scalars="voi")
+    voi_fat_only_cells = pv_grid.threshold(0.5, scalars="fat_only")
     hu_scalars = voi_fat_cells.cell_data["hu"]
 
     # ── Build centerline tubes (beige/off-white, VRT style) ─────────────────
@@ -117,7 +123,7 @@ def render_3d_voi(
     # Syngo.via VRT reference (mean vessel RGB ≈ 224, 204, 173).
     # Pass as float [0,1] RGB tuple — pyvista hex parsing shifts the hue
     # under default lighting, while a float tuple is applied directly.
-    VESSEL_COLOR = (224 / 255, 204 / 255, 173 / 255)  # RGB(224,204,173) warm beige
+    VESSEL_COLOR = (1.0, 0.15, 0.15)  # Bright red for vessels
     tube_meshes = []
     for vessel_name, cl_ijk in vessel_centerlines.items():
         if len(cl_ijk) < 2:
@@ -136,14 +142,24 @@ def render_3d_voi(
     plotter = pv.Plotter(off_screen=not interactive, window_size=(1200, 900))
     plotter.set_background("black")   # pure black — matches VRT reference
 
-    # FAI-coloured pericoronary fat VOI (semi-transparent cloud)
+    # Dual-layer rendering for fat VOI
     fai_cmap = _fai_colormap()
+    
+    # Layer 1: Full VOI structure in dark gray (opacity=0.1)
     plotter.add_mesh(
         voi_fat_cells.extract_surface(algorithm="dataset_surface"),
+        color=(0.2, 0.2, 0.2),  # dark gray
+        opacity=0.1,
+        show_scalar_bar=False,
+    )
+    
+    # Layer 2: Fat-only cells with FAI colormap (opacity=0.6)
+    plotter.add_mesh(
+        voi_fat_only_cells.extract_surface(algorithm="dataset_surface"),
         scalars="hu",
         clim=[FAI_HU_MIN, FAI_HU_MAX],
         cmap=fai_cmap,
-        opacity=0.25,   # translucent so vessels show through clearly
+        opacity=0.6,   # more visible for yellow fat
         show_scalar_bar=True,
         scalar_bar_args={"title": "PCAT HU", "fmt": "%.0f"},
     )
@@ -245,7 +261,7 @@ def render_3d_voi_dicom(
     dicom_dir.mkdir(parents=True, exist_ok=True)
 
     sz, sy, sx = spacing_mm
-    VESSEL_COLOR = (224 / 255, 204 / 255, 173 / 255)
+    VESSEL_COLOR = (1.0, 0.15, 0.15)  # Bright red for vessels
 
     # ── Build pyvista scene (same as render_3d_voi) ──────────────────────
     Z, Y, X = volume.shape
@@ -259,7 +275,13 @@ def render_3d_voi_dicom(
 
     hu_vtk = np.clip(volume.transpose(2, 1, 0).flatten(order="C"), FAI_HU_MIN, FAI_HU_MAX).astype(np.float32)
     pv_grid.cell_data["hu"] = hu_vtk
+    
+    # Create fat-only mask: voi AND hu in fat range
+    fat_only_vtk = ((voi_mask & (volume >= FAI_HU_MIN) & (volume <= FAI_HU_MAX))
+                    .transpose(2, 1, 0).flatten(order="C").astype(np.uint8))
+    pv_grid.cell_data["fat_only"] = fat_only_vtk
     voi_fat_cells = pv_grid.threshold(0.5, scalars="voi")
+    voi_fat_only_cells = pv_grid.threshold(0.5, scalars="fat_only")
 
     tube_meshes = []
     for vessel_name, cl_ijk in vessel_centerlines.items():
@@ -301,12 +323,21 @@ def render_3d_voi_dicom(
         plotter.set_background("black")
         pv.set_plot_theme("dark")
 
+        # Layer 1: Full VOI structure in dark gray (opacity=0.1)
         plotter.add_mesh(
             voi_fat_cells.extract_surface(algorithm="dataset_surface"),
+            color=(0.2, 0.2, 0.2),  # dark gray
+            opacity=0.1,
+            show_scalar_bar=False,
+        )
+        
+        # Layer 2: Fat-only cells with FAI colormap (opacity=0.6)
+        plotter.add_mesh(
+            voi_fat_only_cells.extract_surface(algorithm="dataset_surface"),
             scalars="hu",
             clim=[FAI_HU_MIN, FAI_HU_MAX],
             cmap=fai_cmap,
-            opacity=0.25,
+            opacity=0.6,
             show_scalar_bar=False,
         )
 
@@ -623,6 +654,242 @@ def render_cpr_grayscale(
     plt.savefig(str(out_path), bbox_inches="tight")
     plt.close(fig)
     print(f"[visualize] CPR grayscale saved: {out_path.name}")
+    return out_path
+
+def render_cpr_dicom(
+    volume: np.ndarray,
+    centerline_ijk: np.ndarray,
+    radii_mm: np.ndarray,
+    spacing_mm: List[float],
+    vessel_name: str,
+    output_dir: str | Path,
+    prefix: str = "pcat",
+    slab_thickness_mm: float = 3.0,
+    width_mm: float = 25.0,
+    patient_meta: Optional[dict] = None,
+) -> Optional[Path]:
+    """
+    Render a Curved Planar Reformat (CPR) as a DICOM Secondary Capture file
+    with burned-in annotations.
+    
+    This function computes CPR data and creates a 512×512 RGB image with:
+       - Black background
+       - Grayscale CPR image (soft-tissue window -200 to +400 HU), normalized to 8-bit
+       - FAI colormap overlay for fat voxels (-190 to -30 HU), yellow→red, alpha=0.85
+       - Burned-in annotations:
+         * White dashed vertical line at center column (centerline position)
+         * Green lines at ±mean_radius_mm columns (vessel wall boundary)
+         * Green lines at ±(mean_radius_mm + mean_radius_mm) columns (outer VOI boundary)
+         * Small white text labels: vessel name top-left, "HU -190 to -30" bottom-left
+       - Color bar legend (burned into image): vertical strip on the right
+         yellow=-190 to red=-30, 20px wide
+    
+    Parameters
+    ----------
+    volume          : (Z, Y, X) HU float32
+    centerline_ijk  : (N, 3) centerline voxel indices [z, y, x]
+    radii_mm        : (N,) vessel radii
+    spacing_mm      : [sz, sy, sx]
+    vessel_name     : e.g. "LAD"
+    output_dir      : output directory
+    prefix          : filename prefix
+    slab_thickness_mm : total slab thickness for MIP along tangent (mm)
+    width_mm        : half-width of the CPR plane (lateral extent from centreline)
+    patient_meta    : optional patient metadata from DICOM
+    
+    Returns
+    -------
+    Path to saved DICOM file, or None if too few centerline points
+    """
+    try:
+        import pydicom
+        from pydicom.dataset import Dataset, FileMetaDataset
+        from pydicom.uid import generate_uid, ExplicitVRLittleEndian
+        SecondaryCaptureImageStorage = "1.2.840.10008.5.1.4.1.1.7"
+    except ImportError:
+        print("[visualize] Skipping CPR DICOM: pydicom not installed. pip install pydicom")
+        return None
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    N_pts = len(centerline_ijk)
+    if N_pts < 3:
+        print(f"[visualize] CPR DICOM: too few centerline points for {vessel_name}, skipping.")
+        return None
+    
+    # Compute CPR data using existing helper
+    (cpr_volume, N_frame, B_frame, cl_mm, arclengths, n_height, n_width) = _compute_cpr_data(
+        volume, centerline_ijk, spacing_mm,
+        slab_thickness_mm=slab_thickness_mm, width_mm=width_mm,
+    )
+    
+    # Build the CPR image
+    centre_row = n_height // 2
+    cpr_image = cpr_volume[:, centre_row, :]  # (N_pts, n_width)
+    
+    # Create 512x512 RGB canvas
+    img_size = 512
+    rgb_image = np.zeros((img_size, img_size, 3), dtype=np.uint8)
+    
+    # Calculate pixel spacing
+    pixel_spacing_mm = (2 * width_mm) / img_size
+    
+    # Grayscale CPR (soft-tissue window -200 to +400 HU)
+    gray_img = np.clip(cpr_image, -200.0, 400.0)
+    gray_norm = (gray_img + 200.0) / 600.0
+    gray_norm = np.nan_to_num(gray_norm, nan=0.0)
+    
+    # Resize to fit canvas and place in RGB image
+    try:
+        from PIL import Image as _PILImage
+        gray_pil = _PILImage.fromarray((gray_norm * 255).astype(np.uint8))
+        gray_resized = gray_pil.resize((img_size, img_size), _PILImage.LANCZOS)
+        gray_resized = np.array(gray_resized)
+        # Convert to RGB
+        rgb_image[:, :, 0] = gray_resized
+        rgb_image[:, :, 1] = gray_resized
+        rgb_image[:, :, 2] = gray_resized
+    except ImportError:
+        # Fallback without PIL
+        print("[visualize] Warning: PIL not available, using basic resize for CPR DICOM")
+        # Simple nearest-neighbor resize
+        scale_y = img_size / gray_norm.shape[0]
+        scale_x = img_size / gray_norm.shape[1]
+        y_indices = np.minimum((np.arange(img_size) / scale_y).astype(int), gray_norm.shape[0] - 1)
+        x_indices = np.minimum((np.arange(img_size) / scale_x).astype(int), gray_norm.shape[1] - 1)
+        resized = gray_norm[y_indices[:, None], x_indices[None, :]]
+        rgb_image[:, :, 0] = (resized * 255).astype(np.uint8)
+        rgb_image[:, :, 1] = (resized * 255).astype(np.uint8)
+        rgb_image[:, :, 2] = (resized * 255).astype(np.uint8)
+    
+    # Add FAI overlay with alpha blending
+    fai_img = np.where(
+        (cpr_image >= FAI_HU_MIN) & (cpr_image <= FAI_HU_MAX),
+        cpr_image,
+        np.nan,
+    )
+    
+    # Create FAI color overlay
+    fai_cmap = _fai_colormap()
+    fai_norm = (fai_img - FAI_HU_MIN) / (FAI_HU_MAX - FAI_HU_MIN)  # [0, 1]
+    fai_norm = np.nan_to_num(fai_norm, nan=0.0)
+    
+    # Resize FAI overlay
+    try:
+        fai_pil = _PILImage.fromarray((fai_norm * 255).astype(np.uint8), mode='L')
+        fai_resized = fai_pil.resize((img_size, img_size), _PILImage.LANCZOS)
+        fai_resized = np.array(fai_resized) / 255.0
+        
+        # Apply FAI colormap
+        fai_colors = fai_cmap(fai_resized)[:, :, :3]  # Take RGB, drop alpha
+        fai_alpha = fai_resized * 0.85  # Alpha channel
+        
+        # Alpha blend with background
+        for c in range(3):  # RGB channels
+            rgb_image[:, :, c] = (
+                rgb_image[:, :, c] * (1 - fai_alpha) + 
+                fai_colors[:, :, c] * 255 * fai_alpha
+            ).astype(np.uint8)
+    except:
+        print("[visualize] Warning: FAI overlay failed in CPR DICOM")
+    
+    # Add burned-in annotations
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        
+        fig, ax = plt.subplots(figsize=(5.12, 5.12), dpi=100)
+        ax.imshow(rgb_image, aspect='auto', origin='upper')
+        ax.axis('off')
+        
+        # Calculate pixel positions for annotations
+        mean_radius_px = int(np.mean(radii_mm) / pixel_spacing_mm)
+        center_px = img_size // 2
+        
+        # White dashed vertical line at centerline
+        ax.axvline(x=center_px, color='white', linestyle='--', linewidth=1.5, alpha=0.8)
+        
+        # Green lines at vessel wall boundaries
+        ax.axvline(x=center_px - mean_radius_px, color='green', linestyle='-', linewidth=1.0, alpha=0.7)
+        ax.axvline(x=center_px + mean_radius_px, color='green', linestyle='-', linewidth=1.0, alpha=0.7)
+        
+        # Green lines at outer VOI boundary (2x mean radius)
+        ax.axvline(x=center_px - 2*mean_radius_px, color='green', linestyle='-', linewidth=1.0, alpha=0.5)
+        ax.axvline(x=center_px + 2*mean_radius_px, color='green', linestyle='-', linewidth=1.0, alpha=0.5)
+        
+        # Text labels
+        ax.text(10, 30, vessel_name, color='white', fontsize=10, fontweight='bold')
+        ax.text(10, img_size - 20, "HU -190 to -30", color='white', fontsize=8)
+        
+        # Color bar on right (20px wide)
+        cbar_width = 20
+        cbar_height = 200
+        cbar_x = img_size - cbar_width - 10
+        cbar_y = (img_size - cbar_height) // 2
+        
+        # Draw color bar gradient
+        for i in range(cbar_height):
+            val = 1.0 - (i / cbar_height)  # Top to bottom: -190 to -30
+            color = fai_cmap(val)[:3]  # RGB only
+            rect = mpatches.Rectangle((cbar_x, cbar_y + i), cbar_width, 1, 
+                                    facecolor=color, edgecolor='none')
+            ax.add_patch(rect)
+        
+        # Color bar labels
+        ax.text(cbar_x + cbar_width/2, cbar_y - 10, "-190", color='white', fontsize=7, ha='center')
+        ax.text(cbar_x + cbar_width/2, cbar_y + cbar_height + 10, "-30", color='white', fontsize=7, ha='center')
+        
+        # Convert to numpy array
+        fig.canvas.draw()
+        rgb_with_annotations = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        rgb_with_annotations = rgb_with_annotations.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        plt.close(fig)
+        
+        rgb_image = rgb_with_annotations
+    except Exception as e:
+        print(f"[visualize] Warning: Annotations failed in CPR DICOM: {e}")
+    
+    # Write DICOM Secondary Capture
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = SecondaryCaptureImageStorage
+    sop_uid = generate_uid()
+    file_meta.MediaStorageSOPInstanceUID = sop_uid
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    
+    ds = Dataset()
+    ds.file_meta = file_meta
+    ds.is_implicit_VR = False
+    ds.is_little_endian = True
+    ds.SOPClassUID = SecondaryCaptureImageStorage
+    ds.SOPInstanceUID = sop_uid
+    ds.Modality = "SC"
+    ds.SeriesInstanceUID = generate_uid()
+    ds.SeriesNumber = 901
+    ds.SeriesDescription = f"CPR {vessel_name} FAI"
+    ds.ImageType = ["DERIVED", "SECONDARY", "AXIAL", "CPR"]
+    ds.BurnedInAnnotation = "YES"
+    ds.Rows = img_size
+    ds.Columns = img_size
+    ds.SamplesPerPixel = 3
+    ds.PhotometricInterpretation = "RGB"
+    ds.BitsAllocated = 8
+    ds.BitsStored = 8
+    ds.HighBit = 7
+    ds.PixelRepresentation = 0
+    ds.PlanarConfiguration = 0
+    ds.PixelSpacing = [pixel_spacing_mm, pixel_spacing_mm]
+    ds.PixelData = rgb_image.astype(np.uint8).tobytes()
+    
+    # Copy patient metadata if available
+    if patient_meta:
+        for tag in ['PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'AccessionNumber']:
+            if tag in patient_meta:
+                setattr(ds, tag, patient_meta[tag])
+    
+    out_path = output_dir / f"{prefix}_{vessel_name}_cpr_fai.dcm"
+    pydicom.dcmwrite(str(out_path), ds, write_like_original=False)
+    print(f"[visualize] CPR DICOM saved: {out_path.name}")
+    
     return out_path
 
 # ─────────────────────────────────────────────────────────────────────────────

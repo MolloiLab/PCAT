@@ -230,6 +230,16 @@ class VOIEditor:
             )
             self._tk_brush_lbl.pack(side=tk.LEFT, padx=8)
 
+            # Confirm and Save button
+            save_btn = tk.Button(
+                self._tk_frame, text="\u2713 Confirm and Save",
+                command=self._save,
+                width=18, relief=tk.RAISED, font=("Helvetica", 9, "bold"),
+                bg="#1a5f1a", fg="white", activebackground="#2e8b2e",
+                bd=2, cursor="hand2",
+            )
+            save_btn.pack(side=tk.RIGHT, padx=(4, 10))
+
             # Keyboard hint
             hint = tk.Label(
                 self._tk_frame,

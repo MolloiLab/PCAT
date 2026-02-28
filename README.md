@@ -7,9 +7,10 @@ Automatically measures fat around coronary arteries from a cardiac CT scan (CCTA
 ## What does it do?
 
 1. Finds your coronary arteries (LAD, LCX, RCA) automatically
-2. Segments the fat tissue around them
-3. Measures the **Fat Attenuation Index (FAI)** — a clinical marker for heart inflammation
-4. Saves images and statistics you can review and report
+2. Lets you review and refine the coronary seed locations
+3. Lets you review and adjust the coronary artery centerlines and vessel wall contours
+4. Generates the PCAT (pericoronary fat) volume and measures the **Fat Attenuation Index (FAI)**
+5. Saves images and statistics you can review and report
 
 > **FAI risk threshold: −70.1 HU.** Values above this (less negative) = higher cardiovascular inflammation risk (Oikonomou et al., Lancet 2018).
 
@@ -28,11 +29,7 @@ Get a free TotalSegmentator research licence at:
 
 ---
 
-## Semi-Automatic Mode (recommended)
-
-This is the standard clinical workflow. The pipeline runs automatically, then pauses so you can review each vessel before the results are saved.
-
-**Step 1 — Run the pipeline**
+## Standard Workflow (semi-automatic, one command)
 
 ```bash
 python pipeline/run_pipeline.py \
@@ -42,25 +39,65 @@ python pipeline/run_pipeline.py \
     --auto-seeds
 ```
 
-That's it. The pipeline will:
-- Detect coronary arteries with TotalSegmentator (~30–60 s)
-- Extract centerlines and segment pericoronary fat
-- **Pause and open the VOI Editor** — review the auto-segmented fat region for each vessel, then press `s` to approve or `q` to skip
-- **Pause and open the CPR Browser** — inspect the cross-sections along the full vessel length, then press `q` to continue
-- Save all images and statistics to `output/patient_1200/`
+The pipeline runs all stages automatically and pauses at each review step:
 
-**Step 2 — Check the results**
+### Stage 1 — Auto seed detection
+TotalSegmentator detects the coronary artery locations (~30–60 s) and saves them to `seeds/`.
 
-Open `output/patient_1200/` — you'll find:
-- `patient1200_LAD_cpr_fai.png` — CPR with fat overlay (yellow = healthy fat, red = inflamed)
-- `patient1200_summary.png` — bar chart of FAI, fat fraction, voxel count for all vessels
-- `patient1200_results.json` — numerical FAI statistics
+### Stage 2 — Seed Reviewer (opens automatically if no reviewed seeds exist)
+
+A window opens showing 3 MPR planes with the auto-detected seeds overlaid.
+
+| Key / Action | Effect |
+|---|---|
+| `1` / `2` / `3` | Switch active vessel (LAD / LCX / RCA) |
+| Click on any plane | Move the selected seed to that location |
+| `d` | Delete the current waypoint |
+| `s` | **Save seeds & continue pipeline** |
+| `q` | Quit without saving |
+| Scroll wheel | Change slice |
+
+> If reviewed seeds already exist from a previous run, this step is skipped automatically.
+
+### Stage 3 — Coronary segmentation
+TotalSegmentator segments the vessel walls using the reviewed seeds. Centerlines and radii are extracted.
+
+### Stage 4 — Coronary Artery Contour Editor (opens automatically)
+
+A window opens with the title **"=== PCAT Coronary Artery Contour Editor ==="** showing 3 MPR planes with vessel centerlines and wall contours overlaid.
+
+**Vessel colors:** LAD = red · LCX = blue · RCA = green
+
+| Key / Action | Effect |
+|---|---|
+| `1` / `2` / `3` | Switch active vessel |
+| Click + drag a centerline point | Reposition that point; vessel mask updates on release |
+| `[` / `]` | Decrease / increase radius at current point by 0.1 mm |
+| `a` | Apply current radius to all points of the active vessel |
+| `p` or "Add PCAT" button | Generate PCAT volume (outer = radius × 3) with semi-transparent yellow overlay |
+| `s` | **Save contours & PCAT mask, continue pipeline** |
+| `q` | Quit without saving |
+| Scroll wheel | Change slice |
+
+> Every drag or radius change immediately rebuilds the vessel mask, so the overlay always reflects your edits.
+
+### Stage 5 — CPR Browser (opens automatically)
+
+| Key / Action | Effect |
+|---|---|
+| Click on CPR panel | Jump to that vessel position |
+| `←` / `→` | Step one point along the vessel |
+| `s` | Save a PNG snapshot |
+| `q` | Close and continue |
+
+### Stage 6 — Statistics & output
+FAI statistics are computed and all results are saved to `output/patient_1200/`.
 
 ---
 
-## Fully Automatic Mode (batch / no interaction)
+## Fully Automatic Mode (batch / headless)
 
-Use this for bulk processing or headless servers where no GUI is available.
+Use this for bulk processing or servers with no display.
 
 ```bash
 python pipeline/run_pipeline.py \
@@ -82,63 +119,14 @@ python pipeline/run_pipeline.py --batch --auto-seeds --skip-editor --skip-cpr-br
 
 ---
 
-## If TotalSegmentator misses a vessel
-
-Run the seed reviewer to check and fix the auto-detected coronary locations:
-
-```bash
-python pipeline/seed_reviewer.py \
-    --dicom Rahaf_Patients/1200.2 \
-    --seeds seeds/1200_2_auto.json \
-    --output seeds/patient_1200_reviewed.json
-```
-
-Then pass the corrected seeds to the pipeline:
-
-```bash
-python pipeline/run_pipeline.py \
-    --dicom Rahaf_Patients/1200.2 \
-    --output output/patient_1200 \
-    --prefix patient1200 \
-    --seeds seeds/patient_1200_reviewed.json
-```
-
-**Seed reviewer controls:** `1`/`2`/`3` switch vessel · click moves/adds a seed · `d` deletes a waypoint · `s` saves
-
----
-
-## VOI Editor controls (opens automatically)
-
-| Key | Action |
-|-----|--------|
-| `1` | Paint — add voxels to the fat region |
-| `2` | Erase — remove voxels |
-| `3` | Fat-only paint — only adds fat (−190 to −30 HU) |
-| `[` / `]` | Decrease / increase brush size |
-| `u` | Undo |
-| `s` | Save and continue |
-| `q` | Skip without saving |
-| Scroll wheel | Change slice |
-
----
-
-## CPR Browser controls (opens automatically)
-
-| Key / Action | Effect |
-|---|---|
-| Click on CPR panel | Jump to that vessel position |
-| `←` / `→` | Step one point along the vessel |
-| `s` | Save a PNG snapshot |
-| `q` | Close and continue |
-
----
-
 ## Output files
 
 All outputs land in the directory you set with `--output`:
 
 | File | What it shows |
 |------|--------------|
+| `*_contours.json` | Adjusted centerlines and radii per vessel |
+| `*_pcat_mask.npy` | Binary PCAT VOI mask (numpy array) |
 | `*_cpr_fai.png` | CPR with FAI overlay — yellow/red = fat |
 | `*_cpr_gray.png` | Grayscale CPR at 6 rotation angles |
 | `*_cpr_native_rot*.png` | Curved CPR (Syngo.via style) |
@@ -161,12 +149,12 @@ All outputs land in the directory you set with `--output`:
 
 | Problem | Fix |
 |---------|-----|
-| "too few centerline points" | Re-run `seed_reviewer.py` — seed may be off-vessel |
+| "too few centerline points" | Re-run and adjust seeds in the Seed Reviewer |
 | NaN mean HU in results | No fat voxels in VOI; vessel may be heavily calcified |
-| "only N vessels found" warning | Run `seed_reviewer.py` and add the missing vessel manually |
-| 3D render skipped | `pip install pyvista` |
-| VOI editor / CPR browser won't open | Add `--skip-editor --skip-cpr-browser` (headless server) |
+| "only N vessels found" warning | Add the missing vessel manually in the Seed Reviewer |
+| Seed Reviewer / Contour Editor won't open | Add `--skip-editor` (headless server) |
 | TotalSegmentator fails | Place seeds manually: `python pipeline/seed_picker.py --dicom ... --output seeds/patient.json` |
+| 3D render skipped | `pip install pyvista` |
 
 ---
 
@@ -178,18 +166,18 @@ All outputs land in the directory you set with `--output`:
 | 2 | `Rahaf_Patients/2.1/` | 149 |
 | 317 | `Rahaf_Patients/317.6/` | 399 |
 
-To add a new patient, just change `--dicom` to the new DICOM folder and `--output` to a new folder.
+To add a new patient, change `--dicom` to the new DICOM folder and `--output` to a new folder.
 
 ---
 
 ## Adding multiple patients (batch)
 
-Edit `PATIENT_CONFIGS` in `pipeline/run_pipeline.py` (~line 88):
+Edit `PATIENT_CONFIGS` in `pipeline/run_pipeline.py`:
 
 ```python
 PATIENT_CONFIGS = [
-    {"patient_id": "1200", "dicom": "Rahaf_Patients/1200.2", "seeds": "seeds/patient_1200.json", "output": "output/patient_1200", "prefix": "patient1200"},
-    {"patient_id": "999",  "dicom": "New_Patients/patient999", "seeds": "seeds/patient_999.json", "output": "output/patient_999", "prefix": "patient999"},
+    {"patient_id": "1200", "dicom": "Rahaf_Patients/1200.2", "output": "output/patient_1200", "prefix": "patient1200"},
+    {"patient_id": "999",  "dicom": "New_Patients/patient999", "output": "output/patient_999",  "prefix": "patient999"},
 ]
 ```
 

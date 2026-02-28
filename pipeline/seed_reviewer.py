@@ -159,7 +159,7 @@ class SeedReviewer:
         self.fig = plt.figure(figsize=(18, 10))
         self.fig.suptitle(
             "PCAT Seed Reviewer — Drag seeds to correct | Click to add waypoints | Scroll to change slice\n"
-            "Keys: 1=LAD  2=LCX  3=RCA  |  c=Clear warnings  d=Delete waypoint |  u=Undo  r=Reset vessel  s=Save  q=Quit",
+            "Keys: 1=LAD  2=LCX  3=RCA  |  c=Clear warnings  d=Delete waypoint |  u=Undo  r=Reset vessel  s=Save & Continue  q=Quit without saving",
             fontsize=10,
         )
         
@@ -677,7 +677,7 @@ class SeedReviewer:
             if self._delete_nearest_waypoint(self.z_slice, self.y_slice, self.x_slice):
                 print(f"[seed_reviewer] Deleted waypoint from {self.current_vessel}")
         elif key == "s":
-            self._save()
+            self._save_and_close()
             return
         elif key == "q":
             print("[seed_reviewer] Quitting without saving.")
@@ -720,8 +720,20 @@ class SeedReviewer:
         with open(self.output_path, "w") as f:
             json.dump(output, f, indent=2)
         print(f"[seed_reviewer] Seeds saved to {self.output_path}")
-        plt.title(f"Saved to {self.output_path.name}", fontsize=9)
+        self.fig.suptitle(
+            f"✓ Saved to {self.output_path.name}  —  Seed Reviewer | s=Save & Continue  q=Quit without saving",
+            fontsize=10, color="lightgreen"
+        )
+        self._update_status_bar()
         self.fig.canvas.draw_idle()
+    def _save_and_close(self):
+        """Save seeds to JSON and close the window (signals pipeline to continue)."""
+        self._save()
+        # Write a signal file so the pipeline knows the reviewer is done
+        signal_path = self.output_path.with_suffix(".done")
+        signal_path.write_text("done")
+        print(f"[seed_reviewer] Signal written: {signal_path}")
+        plt.close(self.fig)
     
     def run(self):
         print("\n=== PCAT Seed Reviewer ===")

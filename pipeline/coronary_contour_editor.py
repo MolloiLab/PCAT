@@ -719,5 +719,107 @@ class CoronaryContourEditor:
 
 
 if __name__ == "__main__":
-    print("PCAT Coronary Artery Contour Editor")
-    print("Use launch_coronary_contour_editor() function to start the editor")
+    import argparse
+    import sys
+    from pathlib import Path
+    
+    parser = argparse.ArgumentParser(
+        description="PCAT Coronary Artery Contour Editor - Interactive 3D viewer for reviewing vessel contours",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Controls:\n"
+            "  Drag centerline points or vessel wall radius circles\n"
+            "  1=LAD 2=LCX 3=RCA - switch active vessel\n"
+            "  p - Add PCAT volume\n"
+            "  s - Save & Close\n"
+            "  q - Quit\n"
+        ),
+    )
+    parser.add_argument(
+        "--dicom", required=True,
+        help="Path to DICOM series directory",
+    )
+    parser.add_argument(
+        "--data", required=True,
+        help="Path to .npz file containing vessel data (centerlines, radii, voi_masks)",
+    )
+    parser.add_argument(
+        "--output", required=True,
+        help="Output directory for saving results",
+    )
+    parser.add_argument(
+        "--prefix", default="patient",
+        help="Filename prefix for output files (default: patient)",
+    )
+    args = parser.parse_args()
+    
+    # Add project root to path
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    
+    from pipeline.dicom_loader import load_dicom_series
+    
+    # ── Load DICOM ───────────────────────────────────────────────────────────
+    print(f"[contour_editor] Loading DICOM from {args.dicom} ...")
+    volume, meta = load_dicom_series(args.dicom)
+    spacing_mm = meta["spacing_mm"]
+    print(f"[contour_editor] Volume shape: {volume.shape}  spacing: {spacing_mm}")
+    
+    # ── Load vessel data from .npz ───────────────────────────────────────────
+    data_path = Path(args.data)
+    if not data_path.exists():
+        print(f"[contour_editor] ERROR: Data file not found: {data_path}")
+        sys.exit(1)
+    
+    print(f"[contour_editor] Loading vessel data from {data_path} ...")
+    data = np.load(str(data_path), allow_pickle=True)
+    
+    vessel_centerlines = {}
+    vessel_radii = {}
+    vessel_voi_masks = {}
+    
+    for key in data.files:
+        if key.endswith("_centerline"):
+            vessel_name = key.replace("_centerline", "")
+            vessel_centerlines[vessel_name] = data[key]
+        elif key.endswith("_radii"):
+            vessel_name = key.replace("_radii", "")
+            vessel_radii[vessel_name] = data[key]
+        elif key.endswith("_voi_mask"):
+            vessel_name = key.replace("_voi_mask", "")
+            vessel_voi_masks[vessel_name] = data[key]
+    
+    print(f"[contour_editor] Loaded vessels: {list(vessel_centerlines.keys())}")
+    
+    # ── Launch editor ───────────────────────────────────────────────────────
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    result = launch_coronary_contour_editor(
+        volume=volume,
+        spacing_mm=spacing_mm,
+        vessel_centerlines=vessel_centerlines,
+        vessel_radii=vessel_radii,
+        vessel_voi_masks=vessel_voi_masks,
+        output_dir=output_dir,
+        prefix=args.prefix,
+    )
+    
+    # ── Save updated data back to .npz ───────────────────────────────────────
+    if result:
+        save_data = {}
+        for vessel_name in result.get("centerlines", {}):
+            save_data[f"{vessel_name}_centerline"] = result["centerlines"][vessel_name]
+        for vessel_name in result.get("radii", {}):
+            save_data[f"{vessel_name}_radii"] = result["radii"][vessel_name]
+        for vessel_name in result.get("voi_masks", {}):
+            save_data[f"{vessel_name}_voi_mask"] = result["voi_masks"][vessel_name]
+        
+        output_data_path = output_dir / f"{args.prefix}_contour_data_updated.npz"
+        np.savez(str(output_data_path), **save_data)
+        print(f"[contour_editor] Saved updated data to {output_data_path}")
+        
+        # Write signal file to indicate completion
+        signal_file = output_dir / f"{args.prefix}_contour_editor.done"
+        signal_file.write_text("")
+    else:
+        print("[contour_editor] No changes saved (editor closed without saving)")

@@ -45,6 +45,8 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from skimage import measure as skimage_measure
+
 # Interactive backend — MUST be set before pyplot is imported.
 import matplotlib
 matplotlib.use("TkAgg")
@@ -238,7 +240,8 @@ class CPRBrowser:
         # ── Initial cross-section ─────────────────────────────────────────
         self._xs_im       = None   # imshow handle for grayscale cross-section
         self._xs_fai_im   = None   # imshow handle for FAI overlay
-        self._xs_lumen    = None   # Circle patch for lumen
+        self._xs_lumen    = None   # Circle patch for lumen (faint reference)
+        self._xs_contours = []     # List of contour line objects for actual vessel boundary
         self._xs_voi_ring = None   # Circle patch for VOI outer boundary
         self._xs_needle_txt = None # Text annotation in cross-section panel
 
@@ -265,26 +268,27 @@ class CPRBrowser:
         self._update_title()
 
     def _setup_cpr_ticks(self) -> None:
-        """Setup CPR axis ticks and labels."""
-        # Y-axis: arc-length ticks
-        x_ticks_mm  = np.arange(0, self.arclengths[-1] + 1, 10.0)
-        x_tick_idxs = [int(np.argmin(np.abs(self.arclengths - t))) for t in x_ticks_mm]
-        self.ax_cpr.set_yticks(x_tick_idxs)
+        """Setup CPR axis ticks and labels.
+        After orientation fix: Y-axis = arc-length (rows), X-axis = lateral (cols).
+        """
+        # Y-axis: arc-length ticks (indices 0 to n_width-1)
+        arc_ticks_mm  = np.arange(0, self.arclengths[-1] + 1, 10.0)
+        arc_tick_idxs = [int(np.argmin(np.abs(self.arclengths - t))) for t in arc_ticks_mm]
+        self.ax_cpr.set_yticks(arc_tick_idxs)
         self.ax_cpr.set_yticklabels(
-            [f"{t:.0f}" for t in x_ticks_mm], fontsize=8, color="#aaaacc"
+            [f"{t:.0f}" for t in arc_ticks_mm], fontsize=8, color="#aaaacc"
         )
         self.ax_cpr.set_ylabel("Distance along vessel (mm)", color="#aaaacc", fontsize=10)
 
-        # X-axis: lateral distance ticks
-        sz, sy, sx = self.spacing_mm
-        n_width = self.n_width
-        y_ticks_mm  = np.arange(-self.width_mm, self.width_mm + 1, 5.0)
-        y_tick_idxs = (
-            (y_ticks_mm + self.width_mm) / (2 * self.width_mm) * (n_width - 1)
+        # X-axis: lateral distance ticks (indices 0 to n_height-1)
+        n_height = self.n_height
+        lat_ticks_mm  = np.arange(-self.width_mm, self.width_mm + 1, 5.0)
+        lat_tick_idxs = (
+            (lat_ticks_mm + self.width_mm) / (2 * self.width_mm) * (n_height - 1)
         ).astype(int)
-        self.ax_cpr.set_xticks(np.clip(y_tick_idxs, 0, n_width - 1))
+        self.ax_cpr.set_xticks(np.clip(lat_tick_idxs, 0, n_height - 1))
         self.ax_cpr.set_xticklabels(
-            [f"{t:.0f}" for t in y_ticks_mm], fontsize=7, color="#aaaacc"
+            [f"{t:.0f}" for t in lat_ticks_mm], fontsize=7, color="#aaaacc"
         )
         self.ax_cpr.set_xlabel(
             "Lateral distance from centreline (mm)", color="#aaaacc", fontsize=9
@@ -292,7 +296,7 @@ class CPRBrowser:
 
     def _draw_cpr_image(self) -> None:
         """Draw or update the CPR image (called on rotation change)."""
-        cpr_image = self.cpr_volume.T  # (n_height, n_width)
+        cpr_image = self.cpr_volume  # (n_width, n_height) = (arc, lateral) - vessel runs top→bottom
         gray_img  = np.clip(cpr_image, -200.0, 400.0)
         gray_norm = (gray_img + 200.0) / 600.0
         gray_norm = np.nan_to_num(gray_norm, nan=0.0)
@@ -323,7 +327,7 @@ class CPRBrowser:
             )
             # Centreline axis marker
             self.ax_cpr.axvline(
-                self.n_width // 2, color="white",
+                self.n_height // 2, color="white",
                 linewidth=0.8, linestyle="--", alpha=0.5,
             )
         else:
@@ -440,19 +444,58 @@ class CPRBrowser:
         # Map needle index back to original centerline for radius lookup
         # The CPR has n_width columns, corresponding to arc-length positions
         r_lumen_mm = float(self.radii_mm[min(idx, len(self.radii_mm) - 1)])
-        r_voi_mm   = r_lumen_mm * 2.0  # VOI outer boundary = 2× vessel radius
+        r_voi_mm   = r_lumen_mm * 3.0  # VOI outer boundary = 3× vessel radius (Bug 3 fix)
 
-        # Remove old patches
+        # Remove old patches and contours
         if self._xs_lumen is not None:
             self._xs_lumen.remove()
         if self._xs_voi_ring is not None:
             self._xs_voi_ring.remove()
+        for contour_line in self._xs_contours:
+            contour_line.remove()
+        self._xs_contours.clear()
 
+        # ── Detect actual vessel contour from cross-section image (Bug 2 fix) ──
+        # Threshold for contrast-enhanced lumen: HU > 150
+        LUMEN_HU_THRESHOLD = 150.0
+        lumen_mask = cs_img > LUMEN_HU_THRESHOLD
+        
+        # Find contours at the threshold boundary
+        contours = skimage_measure.find_contours(lumen_mask.astype(float), 0.5)
+        
+        # Convert pixel coordinates to mm coordinates
+        # cs_img has shape (n_cs, n_cs) with extent (-width, width, width, -width)
+        # origin="upper" means pixel (0,0) is at top-left = (-width, -width) in mm
+        n_cs = cs_img.shape[0]
+        
+        for contour in contours:
+            # Filter: only keep contours that are reasonably sized (not noise)
+            if len(contour) < 20:
+                continue
+            
+            # Convert pixel coords to mm coords
+            # px_x = contour[:, 1], px_y = contour[:, 0]
+            # mm_x = -width + (px_x / (n_cs-1)) * 2 * width
+            # mm_y = -width + (px_y / (n_cs-1)) * 2 * width
+            px_y = contour[:, 0]
+            px_x = contour[:, 1]
+            mm_x = -self.width_mm + (px_x / (n_cs - 1)) * 2 * self.width_mm
+            mm_y = -self.width_mm + (px_y / (n_cs - 1)) * 2 * self.width_mm
+            
+            # Draw contour as solid white line (primary vessel boundary)
+            contour_line, = self.ax_cross.plot(
+                mm_x, mm_y,
+                color="#ffffff", linewidth=2.0, linestyle="-",
+                zorder=6,
+            )
+            self._xs_contours.append(contour_line)
+
+        # ── Faint reference circle (estimated lumen radius) ──────────────────
         self._xs_lumen = mpatches.Circle(
             (0, 0), radius=r_lumen_mm,
-            fill=False, edgecolor="#ffffff", linewidth=2.0, linestyle="-",
-            label=f"Lumen wall (r={r_lumen_mm:.1f} mm)",
-            zorder=5,
+            fill=False, edgecolor="#888888", linewidth=1.0, linestyle="--",
+            label=f"Estimated lumen (r={r_lumen_mm:.1f} mm)",
+            zorder=4, alpha=0.6,
         )
         self.ax_cross.add_patch(self._xs_lumen)
 
@@ -542,7 +585,7 @@ class CPRBrowser:
             if self._anchor_mode:
                 if event.button == 1:  # Left click: place anchor
                     arc_mm = float(self.arclengths[int(np.clip(round(event.ydata), 0, len(self.arclengths) - 1))])
-                    lat_mm = (event.xdata / (self.n_width - 1) - 0.5) * 2 * self.width_mm
+                    lat_mm = (event.xdata / (self.n_height - 1) - 0.5) * 2 * self.width_mm
                     self._anchor_points.append((arc_mm, lat_mm))
                     self._add_anchor_marker(event.ydata, event.xdata)
                     self._update_mode_indicator()
@@ -551,7 +594,7 @@ class CPRBrowser:
                     if self._anchor_points:
                         # Find nearest anchor to click position
                         click_arc = float(self.arclengths[int(np.clip(round(event.ydata), 0, len(self.arclengths) - 1))])
-                        click_lat = (event.xdata / (self.n_width - 1) - 0.5) * 2 * self.width_mm
+                        click_lat = (event.xdata / (self.n_height - 1) - 0.5) * 2 * self.width_mm
 
                         min_dist = float('inf')
                         min_idx = -1
@@ -617,8 +660,8 @@ class CPRBrowser:
             # Find row index from arc-length
             row_idx = int(np.argmin(np.abs(self.arclengths - arc_mm)))
             # Find column index from lateral offset
-            col_idx = int((lat_mm / (2 * self.width_mm) + 0.5) * (self.n_width - 1))
-            col_idx = int(np.clip(col_idx, 0, self.n_width - 1))
+            col_idx = int((lat_mm / (2 * self.width_mm) + 0.5) * (self.n_height - 1))
+            col_idx = int(np.clip(col_idx, 0, self.n_height - 1))
 
             marker, = self.ax_cpr.plot(
                 col_idx, row_idx, 'o',

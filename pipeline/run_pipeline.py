@@ -524,27 +524,61 @@ def run_patient(
     # ── Step 3b: Coronary Artery Contour Editor ──────────────────────────────
     # Launch interactive editor to review/adjust centerlines and vessel wall contours.
     # This updates vessel_voi_masks and vessel_centerlines in place.
+    # Launched as subprocess to avoid matplotlib backend conflict (Bug 4 fix).
     if not skip_editor and vessel_voi_masks:
         print("\n[pipeline] Launching Coronary Artery Contour Editor...")
         print("[pipeline] Review centerlines and vessel walls, add PCAT volume, then close.")
+        
+        # Save vessel data to .npz file for subprocess
+        contour_data_path = raw_dir / f"{prefix}_contour_data.npz"
+        save_data = {}
+        for vessel_name in vessel_centerlines:
+            save_data[f"{vessel_name}_centerline"] = vessel_centerlines[vessel_name]
+        for vessel_name in vessel_radii_dict:
+            save_data[f"{vessel_name}_radii"] = vessel_radii_dict[vessel_name]
+        for vessel_name in vessel_voi_masks:
+            save_data[f"{vessel_name}_voi_mask"] = vessel_voi_masks[vessel_name]
+        np.savez(str(contour_data_path), **save_data)
+        print(f"[pipeline] Saved vessel data to {contour_data_path}")
+        
+        # Launch contour editor as subprocess
         try:
-            from pipeline.coronary_contour_editor import launch_coronary_contour_editor
-            updated = launch_coronary_contour_editor(
-                volume=volume,
-                spacing_mm=spacing_mm,
-                vessel_centerlines=vessel_centerlines,
-                vessel_radii=vessel_radii_dict,
-                vessel_voi_masks=vessel_voi_masks,
-                output_dir=raw_dir,
-                prefix=prefix,
+            import subprocess as _subprocess
+            import sys as _sys
+            _subprocess.run(
+                [
+                    _sys.executable,
+                    str(Path(__file__).parent / "coronary_contour_editor.py"),
+                    "--dicom",  str(dicom_dir),
+                    "--data",   str(contour_data_path),
+                    "--output", str(raw_dir),
+                    "--prefix", prefix,
+                ],
+                check=False,
             )
-            if updated:
-                vessel_voi_masks.update(updated.get("voi_masks", {}))
-                vessel_centerlines.update(updated.get("centerlines", {}))
-                vessel_radii_dict.update(updated.get("radii", {}))
+            
+            # Load updated data from .npz file
+            updated_data_path = raw_dir / f"{prefix}_contour_data_updated.npz"
+            if updated_data_path.exists():
+                updated_data = np.load(str(updated_data_path), allow_pickle=True)
+                for key in updated_data.files:
+                    if key.endswith("_centerline"):
+                        vessel_name = key.replace("_centerline", "")
+                        vessel_centerlines[vessel_name] = updated_data[key]
+                    elif key.endswith("_radii"):
+                        vessel_name = key.replace("_radii", "")
+                        vessel_radii_dict[vessel_name] = updated_data[key]
+                    elif key.endswith("_voi_mask"):
+                        vessel_name = key.replace("_voi_mask", "")
+                        vessel_voi_masks[vessel_name] = updated_data[key]
                 print("[pipeline] Contour editor: masks and centerlines updated.")
-        except ImportError:
-            print("[pipeline] WARNING: coronary_contour_editor not found — skipping contour review.")
+                # Clean up temp files
+                contour_data_path.unlink(missing_ok=True)
+                updated_data_path.unlink(missing_ok=True)
+            else:
+                print("[pipeline] Contour editor closed without saving changes.")
+                contour_data_path.unlink(missing_ok=True)
+                
         except Exception as _e:
             print(f"[pipeline] WARNING: contour editor error: {_e}")
     # ── Step 4: Combined VOI export ───────────────────────────────────────

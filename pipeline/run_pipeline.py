@@ -319,6 +319,8 @@ def run_patient(
     vessel_voi_masks: Dict[str, np.ndarray] = {}
     vessel_centerlines: Dict[str, np.ndarray] = {}
     vessel_radii_dict: Dict[str, np.ndarray] = {}
+    vessel_radii_full_dict: Dict[str, np.ndarray] = {}
+    vessel_centerlines_proximal: Dict[str, np.ndarray] = {}
     vessel_stats: Dict[str, Any] = {}
 
     for vessel_name in vessels:
@@ -375,6 +377,7 @@ def run_patient(
 
         print(f"[pipeline] Proximal segment [{seg_start}–{seg_start+seg_length}mm]: {len(centerline)} points")
         vessel_centerlines[vessel_name] = centerline_full
+        vessel_centerlines_proximal[vessel_name] = centerline
 
         # ── Radius estimation (clipped segment — for VOI/stats) ──────────────────────────────────────────
         print(f"[pipeline] Estimating {vessel_name} vessel radii (proximal segment)...")
@@ -387,6 +390,7 @@ def run_patient(
         print(f"[pipeline] Estimating {vessel_name} vessel radii (full centerline)...")
         radii_mm_full = estimate_vessel_radii(volume, centerline_full, spacing_mm)
         print(f"[pipeline] Full radii: mean={radii_mm_full.mean():.2f} mm, range={radii_mm_full.min():.2f}–{radii_mm_full.max():.2f} mm")
+        vessel_radii_full_dict[vessel_name] = radii_mm_full
 
         # ── Build VOI ──────────────────────────────────────────────────
         print(f"[pipeline] Building {vessel_name} tubular VOI...")
@@ -400,106 +404,7 @@ def run_patient(
         # Store original mask for 3D render + combined export
         # Store reviewed (or original if skip_editor) mask for 3D render + combined export
 
-
-        # ── Compute stats ──────────────────────────────────────────────
-        stats = compute_pcat_stats(volume, voi_mask, vessel_name)
-        vessel_stats[vessel_name] = stats
-        print(
-            f"[pipeline] {vessel_name} stats: "
-            f"mean_HU={stats['hu_mean']:.1f}, "
-            f"fat_fraction={100*stats['fat_fraction']:.1f}%, "
-            f"n_fat={stats['n_fat_voxels']:,}"
-        )
-        risk = stats.get("fai_risk", "UNKNOWN")
-        threshold = stats.get("fai_risk_threshold_hu", -70.1)
-        risk_icon = "\u26a0\ufe0f  HIGH RISK" if risk == "HIGH" else ("\u2713 LOW RISK" if risk == "LOW" else "? UNKNOWN")
-        print(
-            f"[pipeline] {vessel_name} FAI RISK: {risk_icon} "
-            f"(mean HU {stats['hu_mean']:.1f} vs threshold {threshold} HU)"
-        )
-
-        # ── Export per-vessel .raw + metadata JSON ──────────────────────────
-        raw_path, json_path = export_voi_raw(
-            volume=volume,
-            voi_mask=voi_mask,
-            meta=meta,
-            output_dir=raw_dir,
-            prefix=f"{prefix}_{vessel_name}",
-        )
-        results["outputs"].append(str(raw_path))
-        results["outputs"].append(str(json_path))
-
-        # ── Visualizations ─────────────────────────────────────────────
-        print(f"[pipeline] Generating {vessel_name} visualizations...")
-
-        # Output 3: CPR FAI
-        cpr_path = render_cpr_fai(
-            volume=volume,
-            centerline_ijk=centerline_full,
-            radii_mm=radii_mm_full,
-            spacing_mm=spacing_mm,
-            vessel_name=vessel_name,
-            output_dir=cpr_dir,
-            prefix=prefix,
-            width_mm=40.0,
-        )
-        if cpr_path:
-            results["outputs"].append(str(cpr_path))
-            
-        # Output 3d: CPR DICOM Secondary Capture
-        cpr_dcm_path = render_cpr_dicom(
-            volume=volume,
-            centerline_ijk=centerline_full,
-            radii_mm=radii_mm_full,
-            spacing_mm=spacing_mm,
-            vessel_name=vessel_name,
-            output_dir=cpr_dir,
-            prefix=prefix,
-            patient_meta=meta,
-        )
-        if cpr_dcm_path:
-            results["outputs"].append(str(cpr_dcm_path))
-
-        # Output 3e: CPR PNG with vessel wall + 4 green lines + FAI overlay
-        cpr_wall_path = render_cpr_png(
-            volume=volume,
-            centerline_ijk=centerline_full,
-            radii_mm=radii_mm_full,
-            spacing_mm=spacing_mm,
-            vessel_name=vessel_name,
-            output_dir=cpr_dir,
-            prefix=prefix,
-            width_mm=40.0,
-        )
-        if cpr_wall_path:
-            results["outputs"].append(str(cpr_wall_path))
-
-
-
-        # Output 4: HU histogram
-        hist_path = plot_hu_histogram(
-            volume=volume,
-            voi_mask=voi_mask,
-            vessel_name=vessel_name,
-            output_dir=plots_dir,
-            prefix=prefix,
-        )
-        results["outputs"].append(str(hist_path))
-
-        # Output 5: Radial HU profile
-        profile_path = plot_radial_hu_profile(
-            volume=volume,
-            centerline_ijk=centerline,
-            radii_mm=radii_mm,
-            spacing_mm=spacing_mm,
-            vessel_name=vessel_name,
-            output_dir=plots_dir,
-            prefix=prefix,
-        )
-        results["outputs"].append(str(profile_path))
-
-        results["vessels"][vessel_name] = stats
-        print(f"[pipeline] {vessel_name} done in {time.time() - t_vsl:.1f}s")
+        print(f"[pipeline] {vessel_name} data ready in {time.time() - t_vsl:.1f}s")
 
 
     # ── Step 3b: Coronary Artery Contour Editor ──────────────────────────────
@@ -516,7 +421,7 @@ def run_patient(
         for vessel_name in vessel_centerlines:
             save_data[f"{vessel_name}_centerline"] = vessel_centerlines[vessel_name]
         for vessel_name in vessel_radii_dict:
-            save_data[f"{vessel_name}_radii"] = vessel_radii_dict[vessel_name]
+            save_data[f"{vessel_name}_radii"] = vessel_radii_full_dict.get(vessel_name, vessel_radii_dict[vessel_name])
         for vessel_name in vessel_voi_masks:
             save_data[f"{vessel_name}_voi_mask"] = vessel_voi_masks[vessel_name]
         np.savez(str(contour_data_path), **save_data)
@@ -562,6 +467,123 @@ def run_patient(
                 
         except Exception as _e:
             print(f"[pipeline] WARNING: contour editor error: {_e}")
+
+    # ── Step 3b½: Generate outputs (AFTER contour editor adjustments) ────────
+    # Stats, exports, and visualizations use potentially updated centerlines,
+    # radii, and VOI masks from the contour editor.
+    for vessel_name in vessels:
+        if vessel_name not in vessel_centerlines:
+            continue
+        print(f"\n[pipeline] ── Generating {vessel_name} outputs ──────────────────────")
+
+        centerline_full = vessel_centerlines[vessel_name]
+        centerline = vessel_centerlines_proximal.get(vessel_name)
+        if centerline is None:
+            continue
+        radii_mm = vessel_radii_dict.get(vessel_name)
+        radii_mm_full = vessel_radii_full_dict.get(vessel_name, radii_mm)
+        voi_mask = vessel_voi_masks.get(vessel_name)
+        if voi_mask is None:
+            continue
+
+        # ── Compute stats ──────────────────────────────────────────────
+        stats = compute_pcat_stats(volume, voi_mask, vessel_name)
+        vessel_stats[vessel_name] = stats
+        print(
+            f"[pipeline] {vessel_name} stats: "
+            f"mean_HU={stats['hu_mean']:.1f}, "
+            f"fat_fraction={100*stats['fat_fraction']:.1f}%, "
+            f"n_fat={stats['n_fat_voxels']:,}"
+        )
+        risk = stats.get("fai_risk", "UNKNOWN")
+        threshold = stats.get("fai_risk_threshold_hu", -70.1)
+        risk_icon = "\u26a0\ufe0f  HIGH RISK" if risk == "HIGH" else ("\u2713 LOW RISK" if risk == "LOW" else "? UNKNOWN")
+        print(
+            f"[pipeline] {vessel_name} FAI RISK: {risk_icon} "
+            f"(mean HU {stats['hu_mean']:.1f} vs threshold {threshold} HU)"
+        )
+
+        # ── Export per-vessel .raw + metadata JSON ──────────────────────────
+        raw_path, json_path = export_voi_raw(
+            volume=volume,
+            voi_mask=voi_mask,
+            meta=meta,
+            output_dir=raw_dir,
+            prefix=f"{prefix}_{vessel_name}",
+        )
+        results["outputs"].append(str(raw_path))
+        results["outputs"].append(str(json_path))
+
+        # ── Visualizations ─────────────────────────────────────────────
+        print(f"[pipeline] Generating {vessel_name} visualizations...")
+
+        # Output 3: CPR FAI
+        cpr_path = render_cpr_fai(
+            volume=volume,
+            centerline_ijk=centerline_full,
+            radii_mm=radii_mm_full,
+            spacing_mm=spacing_mm,
+            vessel_name=vessel_name,
+            output_dir=cpr_dir,
+            prefix=prefix,
+            width_mm=40.0,
+        )
+        if cpr_path:
+            results["outputs"].append(str(cpr_path))
+
+        # Output 3d: CPR DICOM Secondary Capture
+        cpr_dcm_path = render_cpr_dicom(
+            volume=volume,
+            centerline_ijk=centerline_full,
+            radii_mm=radii_mm_full,
+            spacing_mm=spacing_mm,
+            vessel_name=vessel_name,
+            output_dir=cpr_dir,
+            prefix=prefix,
+            patient_meta=meta,
+        )
+        if cpr_dcm_path:
+            results["outputs"].append(str(cpr_dcm_path))
+
+        # Output 3e: CPR PNG with vessel wall + 4 green lines + FAI overlay
+        cpr_wall_path = render_cpr_png(
+            volume=volume,
+            centerline_ijk=centerline_full,
+            radii_mm=radii_mm_full,
+            spacing_mm=spacing_mm,
+            vessel_name=vessel_name,
+            output_dir=cpr_dir,
+            prefix=prefix,
+            width_mm=40.0,
+        )
+        if cpr_wall_path:
+            results["outputs"].append(str(cpr_wall_path))
+
+        # Output 4: HU histogram
+        hist_path = plot_hu_histogram(
+            volume=volume,
+            voi_mask=voi_mask,
+            vessel_name=vessel_name,
+            output_dir=plots_dir,
+            prefix=prefix,
+        )
+        results["outputs"].append(str(hist_path))
+
+        # Output 5: Radial HU profile
+        profile_path = plot_radial_hu_profile(
+            volume=volume,
+            centerline_ijk=centerline,
+            radii_mm=radii_mm,
+            spacing_mm=spacing_mm,
+            vessel_name=vessel_name,
+            output_dir=plots_dir,
+            prefix=prefix,
+        )
+        results["outputs"].append(str(profile_path))
+
+        results["vessels"][vessel_name] = stats
+        print(f"[pipeline] {vessel_name} outputs complete.")
+
     # ── Step 3c: Interactive CPR browsers (one per vessel) ────────────────
     # Launched after contour editor so the user reviews contours first,
     # then browses CPR images with the final centerlines.

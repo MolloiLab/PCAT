@@ -1248,7 +1248,33 @@ class ContourEditor:
 
     def run(self) -> None:
         """Run the interactive editor (blocks until window is closed)."""
+        # Start periodic pyvista refresh so the 3D window stays alive
+        # while Tk's mainloop drives the matplotlib figure.
+        self._start_pyvista_timer()
         plt.show()
+    def _start_pyvista_timer(self) -> None:
+        """Periodically call plotter.update() via Tk's after() so the 3D window
+        stays responsive alongside the matplotlib Tk mainloop."""
+        if self.plotter is None:
+            return
+        interval_ms = 200  # 5 Hz refresh
+
+        def _tick():
+            if self.plotter is None:
+                return
+            try:
+                self.plotter.update()
+            except Exception:
+                return  # plotter was closed
+            try:
+                self.fig.canvas.get_tk_widget().after(interval_ms, _tick)
+            except Exception:
+                pass  # fig already closed
+
+        try:
+            self.fig.canvas.get_tk_widget().after(interval_ms, _tick)
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────

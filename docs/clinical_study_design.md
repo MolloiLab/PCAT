@@ -54,15 +54,20 @@ Enrol a large cohort of CCTA patients, measure FAI at baseline, follow them for 
 
 **Limitation**: "Diseased" is defined **retrospectively by outcome**, not by a pre-defined biological state. Patients who had events are labelled "diseased" — but the inflammation that caused their event may have resolved, progressed, or been unrelated to PCAT. There is no tissue-level confirmation that FAI was measuring inflammation rather than some other process.
 
-### 1.3 Strategy 3: Histological Ground Truth (Antonopoulos 2017 Only)
+### 1.3 Strategy 3: Histological Ground Truth
 
-**This is the only study with true biological ground truth.** Patients undergoing cardiac surgery (bypass grafting, valve replacement) donated pericoronary fat biopsies at the time of surgery. The biopsied fat was matched to pre-operative CT scans.
+Two studies have used histological examination as ground truth for FAI validation — one in surgical patients and one post-mortem.
 
 | Study | Population | How "inflamed" was defined | Key findings |
 |---|---|---|---|
 | Antonopoulos et al. 2017 (*Sci Transl Med*, n=453) | Cardiac surgery patients | Histology — PPARγ expression, lipid droplet size, IL-6/TNF-α levels, UCP1 expression | Inflamed fat: reduced PPARγ (−2.3-fold), reduced FABP4 (−1.8-fold), increased IL-6 (+3.1-fold), increased TNF-α (+2.7-fold), smaller lipid droplets. HU correlated with these markers. |
+| Ocana et al. 2025 (*Int J Cardiol*, n=35) | Post-mortem — sudden cardiac death from ACS | Histology of fatal culprit plaques — intraplaque inflammation, adventitial inflammation, vasa vasorum density | FAI higher at culprit vs. control vessels (−62.5 vs. −68.5 HU, p=0.003). **However, within culprit lesions, FAI did NOT distinguish those with vs. without local histopathological inflammation (p=0.378).** Napkin-ring sign (p=0.049) and plaque enhancement (p=0.024) were better associated with histological inflammation than FAI. |
 
-**Limitation**: This is a surgical population (severe disease, often multivessel), not representative of the broader CCTA population. The biopsy is epicardial fat near the aortic root, not precisely the same pericoronary fat measured by FAI. Sample handling may alter tissue properties.
+**Antonopoulos 2017 limitation**: Surgical population (severe disease, often multivessel), not representative of the broader CCTA population. The biopsy is epicardial fat near the aortic root, not precisely the same pericoronary fat measured by FAI. Sample handling may alter tissue properties.
+
+**Ocana 2025 limitation**: Post-mortem population — hemodynamic changes after death may alter tissue properties. Small sample (n=35). Post-mortem CT angiography (MPMCTA), not clinical CCTA. However, the key finding — that FAI distinguishes culprit from non-culprit vessels but cannot distinguish inflamed from non-inflamed culprit lesions — suggests FAI may be a marker of plaque vulnerability rather than a specific inflammation measurement.
+
+**Why Ocana 2025 matters for your study**: This is the strongest evidence that FAI measures *something* related to high-risk disease but may NOT be specifically measuring inflammation at the tissue level. Material decomposition, by measuring actual tissue composition, could potentially discriminate what FAI cannot.
 
 ---
 
@@ -114,10 +119,10 @@ This is a strength, not a limitation. Use it in the discussion:
 |---|---|---|---|---|
 | What defines "diseased"? | Culprit lesion (ICA/clinical) | Cardiac event (MACE/death) | Histological markers (PPARγ, IL-6) | **Known tissue composition (water/lipid fractions)** |
 | Ground truth type | Clinical endpoint | Clinical endpoint | Biological endpoint | **Compositional ground truth** |
-| Within-patient control? | Yes (non-culprit vessel) | No (between-patient) | Partial (adjacent tissue) | **Yes (same phantom, different composition)** |
+| Within-patient control? | Yes (non-culprit vessel) | No (between-patient) | Partial (adjacent tissue / contralateral vessel) | **Yes (same phantom, different composition)** |
 | Protocol standardised? | Single-centre protocol | Multi-centre, variable | Single-centre | **Systematically varied** |
-| Can confirm what FAI measures? | No — circular (FAI validates FAI) | No — correlation, not mechanism | Partially — matches HU to biology | **Yes — known input vs. measured output** |
-| Limitations | Culprit ≠ most inflamed; just the one that ruptured | Reverse causation; confounders | Surgical population; biopsy location | Simulation; not clinical |
+| Can confirm what FAI measures? | No — circular (FAI validates FAI) | No — correlation, not mechanism | Partially — Antonopoulos: HU correlates with histological markers; Ocana: FAI distinguishes culprit vessels but NOT inflamed vs. non-inflamed culprit lesions | **Yes — known input vs. measured output** |
+| Limitations | Culprit ≠ most inflamed; just the one that ruptured | Reverse causation; confounders | Surgical / post-mortem populations; biopsy location; small samples | Simulation; not clinical |
 
 ---
 
@@ -331,16 +336,17 @@ Group C is defined as "CAD-RADS 3–5, OR ≥ 2 high-risk plaque features in any
 4. Oikonomou EK et al. "CRISP-CT: Non-invasive detection of coronary inflammation using CT." *Lancet* 2018;392:929–939. [DOI](https://doi.org/10.1016/S0140-6736(18)31114-0)
 5. Chan K et al. "ORFAN: Pericoronary adipose tissue attenuation and mortality." *Lancet* 2024. [DOI](https://doi.org/10.1016/S0140-6736(24)01811-9)
 6. Antonopoulos AS et al. "Detecting human coronary inflammation by imaging perivascular fat." *Sci Transl Med* 2017;9:eaal2658. [DOI](https://doi.org/10.1126/scitranslmed.aal2658)
+7. Ocana G et al. "Coronary CT angiography-derived pericoronary fat attenuation index: Post-mortem histopathological correlation in fatal plaques." *Int J Cardiol* 2025;435:133388. [DOI](https://doi.org/10.1016/j.ijcard.2025.133388)
 
 ### Part II — Clinical Study Design References
 
-7. Nie S, Molloi S. "Quantification of Water and Lipid Composition of Perivascular Adipose Tissue Using Coronary CT Angiography: A Simulation Study." *Int J Cardiovasc Imaging* 2025;41:1091–1101. [DOI](https://doi.org/10.1007/s10554-025-03358-5)
-8. Chen Q et al. "Quantification of pericoronary adipose tissue attenuation using dual-layer spectral detector CT to detect vulnerable plaques." *Diagn Interv Radiol* 2021;27:791–797. [DOI](https://doi.org/10.5152/dir.2021.20677)
-9. Kuneman JH et al. "Pericoronary adipose tissue attenuation in patients with acute coronary syndrome versus stable coronary artery disease." *Circ Cardiovasc Imaging* 2023;16:e015408. [DOI](https://doi.org/10.1161/CIRCIMAGING.123.015408)
-10. Kahmann SL et al. "Interrelation of pericoronary adipose tissue texture and coronary artery disease in cardiac photon-counting CT." *Front Cardiovasc Med* 2024;11:1399917. [DOI](https://doi.org/10.3389/fcvm.2024.1399917)
-11. Varga-Szemes A et al. "Epicardial adipose tissue attenuation and fat attenuation index: phantom study and in vivo measurements with photon-counting CT." *Acad Radiol* 2021. [DOI](https://doi.org/10.1016/j.acra.2021.07.023)
-12. Ma R et al. "Towards reference values of pericoronary adipose tissue attenuation: impact of coronary artery and tube voltage in coronary CT angiography." *Eur Radiol* 2020;30:6838–6846. [DOI](https://doi.org/10.1007/s00330-020-07069-0)
-13. Boussoussou M et al. "The effect of patient and imaging characteristics on pericoronary adipose tissue attenuation." *JCCT* 2023;17:52–59. [DOI](https://doi.org/10.1016/j.jcct.2022.09.006)
-14. Xu L et al. "Relationship between different clinical characteristics and pericoronary adipose tissue attenuation values in patients without coronary heart disease." *BMC Cardiovasc Disord* 2024;24:348. [DOI](https://doi.org/10.1186/s12872-024-04021-0)
-15. Tremamunno G et al. "Photon-counting vs. energy-integrating detector CT — FAI not comparable." *Acad Radiol* 2025;32(3). [DOI](https://doi.org/10.1016/j.acra.2024.11.055)
-16. Cury RC et al. "CAD-RADS 2.0 — Coronary Artery Disease Reporting and Data System." *Radiology: Cardiothoracic Imaging* 2022;4(5):e220183. [DOI](https://doi.org/10.1148/ryct.220183)
+8. Nie S, Molloi S. "Quantification of Water and Lipid Composition of Perivascular Adipose Tissue Using Coronary CT Angiography: A Simulation Study." *Int J Cardiovasc Imaging* 2025;41:1091–1101. [DOI](https://doi.org/10.1007/s10554-025-03358-5)
+9. Chen Q et al. "Quantification of pericoronary adipose tissue attenuation using dual-layer spectral detector CT to detect vulnerable plaques." *Diagn Interv Radiol* 2021;27:791–797. [DOI](https://doi.org/10.5152/dir.2021.20677)
+10. Kuneman JH et al. "Pericoronary adipose tissue attenuation in patients with acute coronary syndrome versus stable coronary artery disease." *Circ Cardiovasc Imaging* 2023;16:e015408. [DOI](https://doi.org/10.1161/CIRCIMAGING.123.015408)
+11. Kahmann SL et al. "Interrelation of pericoronary adipose tissue texture and coronary artery disease in cardiac photon-counting CT." *Front Cardiovasc Med* 2024;11:1399917. [DOI](https://doi.org/10.3389/fcvm.2024.1399917)
+12. Varga-Szemes A et al. "Epicardial adipose tissue attenuation and fat attenuation index: phantom study and in vivo measurements with photon-counting CT." *Acad Radiol* 2021. [DOI](https://doi.org/10.1016/j.acra.2021.07.023)
+13. Ma R et al. "Towards reference values of pericoronary adipose tissue attenuation: impact of coronary artery and tube voltage in coronary CT angiography." *Eur Radiol* 2020;30:6838–6846. [DOI](https://doi.org/10.1007/s00330-020-07069-0)
+14. Boussoussou M et al. "The effect of patient and imaging characteristics on pericoronary adipose tissue attenuation." *JCCT* 2023;17:52–59. [DOI](https://doi.org/10.1016/j.jcct.2022.09.006)
+15. Xu L et al. "Relationship between different clinical characteristics and pericoronary adipose tissue attenuation values in patients without coronary heart disease." *BMC Cardiovasc Disord* 2024;24:348. [DOI](https://doi.org/10.1186/s12872-024-04021-0)
+16. Tremamunno G et al. "Photon-counting vs. energy-integrating detector CT — FAI not comparable." *Acad Radiol* 2025;32(3). [DOI](https://doi.org/10.1016/j.acra.2024.11.055)
+17. Cury RC et al. "CAD-RADS 2.0 — Coronary Artery Disease Reporting and Data System." *Radiology: Cardiothoracic Imaging* 2022;4(5):e220183. [DOI](https://doi.org/10.1148/ryct.220183)

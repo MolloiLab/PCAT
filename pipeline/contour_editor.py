@@ -274,7 +274,7 @@ class ContourEditor:
         # Title with controls hint
         self.fig.suptitle(
             f"PCAT Contour Editor — {self.prefix}\n"
-            f"Draw lasso to edit | E Fill/Erase | A Auto-snap | ←/→ Navigate | 1/2/3 Vessel | R Reset | I Interpolate | S Save | Q Quit",
+            f"Draw lasso to edit | E Fill/Erase | A Auto-snap | ←/→ Navigate | 1/2/3 Vessel | R Reset | D Delete | I Interpolate | S Save | Q Quit",
             fontsize=10,
         )
 
@@ -1064,6 +1064,9 @@ class ContourEditor:
         elif event.key == 'r':
             # Reset current contour
             self._reset_current_contour()
+        elif event.key == 'd':
+            # Delete current contour entirely
+            self._delete_current_contour()
         elif event.key == 'e':
             # Toggle fill/erase mode
             self.fill_mode = not self.fill_mode
@@ -1154,6 +1157,19 @@ class ContourEditor:
         self._update_display()
         self._update_pyvista_meshes()
         print(f"[contour_editor] Reset contour at position {pos}")
+
+    def _delete_current_contour(self) -> None:
+        """Delete (clear) current contour — set to minimal circle."""
+        vessel = self.current_vessel
+        pos = self.current_position
+        n_angles = self.vessel_data[vessel]["r_theta"].shape[1]
+        # Set to a tiny uniform circle (0.3 mm radius — effectively no contour)
+        self.vessel_data[vessel]["r_theta"][pos] = np.full(n_angles, 0.3)
+        self.modified_mask[vessel][pos] = True
+        self._recalculate_r_eq(vessel, pos)
+        self._update_display()
+        self._update_pyvista_meshes()
+        print(f"[contour_editor] Deleted contour at {vessel} position {pos}")
 
     def _recalculate_r_eq(self, vessel: str, pos: int) -> None:
         """Recalculate equivalent radius for a position."""
@@ -1334,6 +1350,7 @@ def main() -> None:
             "  ↑/↓ arrows    Navigate ±5 positions\n"
             "  1/2/3         Switch vessel (LAD/LCX/RCA)\n"
             "  R             Reset current contour to auto-detected values\n"
+            "  D             Delete current contour entirely\n"
             "  I             Fill between slices (interpolate)\n"
             "  S             Save all corrections and close\n"
             "  Q             Quit without saving\n"

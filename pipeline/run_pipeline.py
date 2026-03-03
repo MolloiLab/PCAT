@@ -25,15 +25,16 @@ Full pipeline per patient:
   4. For each vessel (LAD, LCX, RCA):
      a. Extract centerline via FMM/Dijkstra shortest path from seeds
      b. Clip to proximal segment (40mm for LAD/LCX; 10–50mm for RCA)
-     c. Extract vessel wall contours via polar-transform boundary detection
-     d. Estimate vessel radii via EDT (for CPR rendering)
-  5. Centerline verification visualization (with TotalSeg overlay if available)
-  6. Interactive contour correction (game-style GUI editor)
-  7. Build contour-based PCAT VOI masks from corrected contours
-  8. Generate outputs: per-vessel stats, .raw exports, CPR visualizations
-  9. Interactive CPR browser (one per vessel)
-  10. Combined VOI export + 3D visualization
-  11. Write per-patient stats JSON + summary chart
+     c. Estimate vessel radii via EDT (for CPR rendering)
+  5. Interactive centerline editor (review/correct centerlines with CPR feedback)
+  6. Extract vessel wall contours via polar-transform boundary detection
+  7. Centerline verification visualization (with TotalSeg overlay if available)
+  8. Interactive contour correction (scissors-based GUI editor)
+  9. Build contour-based PCAT VOI masks from corrected contours
+  10. Generate outputs: per-vessel stats, .raw exports, CPR visualizations
+  11. Interactive CPR browser (one per vessel)
+  12. Combined VOI export + 3D visualization
+  13. Write per-patient stats JSON + summary chart
 """
 
 from __future__ import annotations
@@ -194,6 +195,7 @@ def run_patient(
     vessels: Optional[List[str]] = None,
     skip_3d: bool = False,
     skip_editor: bool = False,
+    skip_centerline_editor: bool = False,
     skip_cpr_browser: bool = False,
     legacy_voi: bool = False,
     vesselness_sigmas: Optional[List[float]] = None,
@@ -211,6 +213,7 @@ def run_patient(
     vessels     : list of vessels to process (default: all in seeds file)
     skip_3d     : skip 3D pyvista render (use in headless/CI environments)
     skip_editor  : skip interactive VOI editor (use in headless/CI environments)
+    skip_centerline_editor : skip only the centerline editor (use in headless/CI environments)
     vesselness_sigmas : Frangi scale sigmas in mm (default: [0.5, 1.0, 1.5, 2.0, 2.5])
     auto_seeds        : if True and seeds_path missing, call TotalSegmentator auto-seed
     auto_seeds_device : device for TotalSegmentator ("cpu"|"gpu"|"mps")
@@ -402,29 +405,95 @@ def run_patient(
         print(f"[pipeline] Full radii: mean={radii_mm_full.mean():.2f} mm, range={radii_mm_full.min():.2f}–{radii_mm_full.max():.2f} mm")
         vessel_radii_full_dict[vessel_name] = radii_mm_full
 
-        # ── Build VOI (legacy mode) or Extract contours (new default) ────────────────────
-        if legacy_voi:
-            # Legacy: Build tubular VOI via EDT
-            print(f"[pipeline] Building {vessel_name} tubular VOI (legacy mode)...")
-            voi_mask = build_tubular_voi(volume.shape, centerline, spacing_mm, radii_mm)
-            print(f"[pipeline] VOI voxels (auto): {voi_mask.sum():,}")
-            vessel_voi_masks[vessel_name] = voi_mask
+        print(f"[pipeline] {vessel_name} data ready in {time.time() - t_vsl:.1f}s")
+
+    # ── Step 3a: Centerline Editor ─────────────────────────────────────────
+    # Launch interactive editor to review/correct vessel centerlines.
+    # Modified centerlines are used for contour extraction.
+    if not skip_editor and not skip_centerline_editor and vessel_centerlines_proximal:
+        centerline_npz = raw_dir / f"{prefix}_centerlines.npz"
+        centerline_done = raw_dir / f"{prefix}_centerline_editor.done"
+        
+        # Save current centerlines for the editor
+        cl_save = {}
+        for vn, cl in vessel_centerlines.items():
+            cl_save[f"{vn}_centerline"] = cl
+        np.savez(str(centerline_npz), **cl_save)
+        
+        print("\n[pipeline] Launching Centerline Editor...")
+        print("[pipeline] Review/correct centerlines, then press 'S' to save and continue.")
+        try:
+            import subprocess as _subprocess
+            import sys as _sys
+            _subprocess.run(
+                [
+                    _sys.executable,
+                    str(Path(__file__).parent / "centerline_editor.py"),
+                    "--dicom",  str(dicom_dir),
+                    "--seeds",  str(seeds_path),
+                    "--output", str(raw_dir),
+                    "--prefix", prefix,
+                ],
+                check=False,
+            )
+        except Exception as _e:
+            print(f"[pipeline] WARNING: centerline editor error: {_e}")
+        
+        # Load modified centerlines if saved
+        edited_npz = raw_dir / f"{prefix}_centerlines.npz"
+        if centerline_done.exists() and edited_npz.exists():
+            edited_data = np.load(str(edited_npz), allow_pickle=True)
+            for vn in list(vessel_centerlines.keys()):
+                key = f"{vn}_centerline"
+                if key in edited_data:
+                    new_cl = edited_data[key]
+                    print(f"[pipeline] {vn}: loaded edited centerline ({len(new_cl)} pts)")
+                    vessel_centerlines[vn] = new_cl
+                    # Re-clip to proximal segment
+                    seg_start = float(VESSEL_CONFIGS[vn].get("start_mm", 0.0))
+                    seg_length = float(VESSEL_CONFIGS[vn].get("length_mm", 40.0))
+                    centerline_prox = clip_centerline_by_arclength(
+                        new_cl, spacing_mm, start_mm=seg_start, length_mm=seg_length,
+                    )
+                    if len(centerline_prox) >= 5:
+                        vessel_centerlines_proximal[vn] = centerline_prox
+                        # Re-estimate radii
+                        vessel_radii_dict[vn] = estimate_vessel_radii(volume, centerline_prox, spacing_mm)
+                        vessel_radii_full_dict[vn] = estimate_vessel_radii(volume, new_cl, spacing_mm)
+                    else:
+                        print(f"[pipeline] WARNING: edited {vn} centerline too short after clip, keeping original")
+            centerline_done.unlink(missing_ok=True)
+            print("[pipeline] Centerline editor: corrections loaded.")
         else:
-            # New default: Extract vessel wall contours via polar transform
+            print("[pipeline] Centerline editor closed without saving. Using auto-extracted centerlines.")
+
+    # ── Step 3a½: Contour extraction (using final centerlines) ──────────
+    if not legacy_voi:
+        for vessel_name in vessels:
+            if vessel_name not in vessel_centerlines_proximal:
+                continue
+            centerline = vessel_centerlines_proximal[vessel_name]
             print(f"[pipeline] Extracting {vessel_name} vessel wall contours...")
             contour_result = extract_vessel_contours(
                 volume, centerline, spacing_mm, vessel_name=vessel_name
             )
             vessel_contour_results[vessel_name] = contour_result
-            # Print contour extraction stats
             n_fallback = int(contour_result.fallback_mask.sum())
             print(
                 f"[pipeline] {vessel_name} contours: r_eq mean={np.mean(contour_result.r_eq):.2f} mm, "
                 f"fallback={n_fallback}/{len(contour_result.r_eq)} positions"
             )
-            # VOI will be built later after contour editor corrections
-
-        print(f"[pipeline] {vessel_name} data ready in {time.time() - t_vsl:.1f}s")
+    else:
+        # Legacy: Build tubular VOI via EDT
+        for vessel_name in vessels:
+            if vessel_name not in vessel_centerlines_proximal:
+                continue
+            centerline = vessel_centerlines_proximal[vessel_name]
+            radii_mm = vessel_radii_dict[vessel_name]
+            print(f"[pipeline] Building {vessel_name} tubular VOI (legacy mode)...")
+            voi_mask = build_tubular_voi(volume.shape, centerline, spacing_mm, radii_mm)
+            print(f"[pipeline] VOI voxels (auto): {voi_mask.sum():,}")
+            vessel_voi_masks[vessel_name] = voi_mask
 
     # ── Centerline verification visualization ────────────────────────────
     print("\n[pipeline] Generating centerline verification visualization...")
@@ -867,6 +936,14 @@ def main():
         ),
     )
     parser.add_argument(
+        "--skip-centerline-editor", action="store_true",
+        dest="skip_centerline_editor",
+        help=(
+            "Skip only the centerline editor (still show contour editor). "
+            "Useful when you want to manually adjust contours but not centerlines."
+        ),
+    )
+    parser.add_argument(
         "--skip-cpr-browser", action="store_true",
         dest="skip_cpr_browser",
         help=(
@@ -942,6 +1019,7 @@ def main():
                     vessels=args.vessels,
                     skip_3d=args.skip_3d,
                     skip_editor=args.skip_editor,
+                    skip_centerline_editor=args.skip_centerline_editor,
                     skip_cpr_browser=args.skip_cpr_browser,
                     legacy_voi=args.legacy_voi,
                     auto_seeds=args.auto_seeds,
@@ -975,6 +1053,7 @@ def main():
             vessels=args.vessels,
             skip_3d=args.skip_3d,
             skip_editor=args.skip_editor,
+            skip_centerline_editor=args.skip_centerline_editor,
             skip_cpr_browser=args.skip_cpr_browser,
             legacy_voi=args.legacy_voi,
             auto_seeds=args.auto_seeds,

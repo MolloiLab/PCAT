@@ -60,6 +60,8 @@ You are not challenging the field — you are building on it. Your introduction 
 ### 2.2 The biological basis is real (cite this one)
 - **Antonopoulos 2017** (*Sci Transl Med*): Histological validation in 453 cardiac surgery patients. Inflamed PCAT had reduced PPARγ (−2.3-fold), reduced FABP4 (−1.8-fold), increased IL-6 (+3.1-fold), increased TNF-α (+2.7-fold), and smaller lipid droplets. This is genuine biology — coronary inflammation really does change the molecular phenotype of adjacent fat.
 
+**Important nuance**: Antonopoulos et al. did NOT directly measure water content. The increased CT attenuation of inflamed PCAT was attributed to reduced lipid accumulation (smaller adipocytes, reduced PPARγ/FABP4 expression), which indirectly implies a higher water-to-lipid ratio. The water content increase is an inference from the histological findings, not a direct measurement. When citing this in your paper, say "reduced lipid content" rather than "increased water content" — the former is directly measured, the latter is inferred.
+
 ### 2.3 FAI predicts clinical outcomes (cite these)
 - **CRISP-CT** (Oikonomou, *Lancet* 2018): HR 9.04 for cardiac death, n=1,872. Threshold −70.1 HU.
 - **ORFAN extended** (Chan, *Lancet* 2024): HR 29.8 (3 inflamed arteries vs. none), n=40,091.
@@ -155,6 +157,8 @@ Your first paper (Nie & Molloi, *Int J Cardiovasc Imaging* 2025) established:
 | Water fraction measurement is accurate | RMSE 0.01–0.64% across 80–135 kVp |
 | HU is protocol-dependent | 21.9% variance across kVp, 3.6% across patient sizes |
 | Material decomposition is protocol-independent | Same composition → same water fraction regardless of protocol |
+
+**Framing note for your current paper**: Protocol independence was demonstrated for healthy tissue composition in Nie & Molloi 2025. Your current paper tests whether this holds under inflammation conditions (altered water/lipid ratios). In your paper, frame it as: "Previously demonstrated under healthy tissue conditions (Nie & Molloi 2025), we now evaluate whether protocol-independent composition measurement extends to the detection of inflammation-induced changes." Do NOT claim protocol independence as a proven fact for inflammation detection until your results confirm it.
 | Three-material decomposition works | Water, lipid, protein decomposition demonstrated |
 
 **What it did NOT show** (and what your current paper must add):
@@ -212,7 +216,7 @@ Based on how simulation studies in this field are reviewed, expect these questio
 
 ### Q3: "Your inflammation model is too simple — real inflammation isn't a uniform water content increase"
 
-**Prepare this answer**: "We modelled inflammation as a shift in water-lipid ratio based on the histologically validated finding that inflamed adipocytes retain more water and less lipid (Antonopoulos et al. 2017). While real inflammation is heterogeneous and includes cellular infiltration, extracellular matrix changes, and angiogenesis, the water content increase is the primary CT-detectable signature. Our model captures the dominant signal component relevant to CT-based detection."
+**Prepare this answer**: "We modelled inflammation as a shift in water-lipid ratio based on the histologically validated finding that inflamed adipocytes have reduced lipid accumulation and smaller lipid droplets (Antonopoulos et al. 2017), which shifts the tissue composition toward higher water-to-lipid ratio. While real inflammation is heterogeneous and includes cellular infiltration, extracellular matrix changes, and angiogenesis, the compositional shift is the primary CT-detectable signature. Our model captures the dominant signal component relevant to CT-based detection."
 
 ### Q4: "Material decomposition requires dual-energy or photon-counting CT — this limits clinical applicability"
 
@@ -304,7 +308,7 @@ Be extremely precise. Reviewers of simulation papers scrutinise methods heavily.
 - How inflammation was modelled (cite Antonopoulos 2017 for biological basis)
 - CT simulation parameters (kVp values, patient sizes, noise levels)
 - Material decomposition algorithm (cite your lab's method)
-- FAI computation (use Oxford protocol: −190 to −30 HU window)
+- FAI computation (use Oxford protocol: −190 to −30 HU voxel inclusion window — this defines which voxels are classified as "fat," NOT the normal biological range of FAI values. Actual FAI values for healthy pericoronary fat typically fall around −75 to −85 HU.)
 - Statistical analysis
 
 ### 9.3 Results
@@ -345,7 +349,8 @@ These are the numbers you will need in your introduction, discussion, and when r
 |---|---|---|
 | HR 9.04 | RCA-FAI for cardiac death, 5y follow-up | CRISP-CT, Oikonomou 2018 |
 | HR 29.8 | 3 inflamed arteries vs. none, cardiac mortality | ORFAN, Chan 2024 |
-| −70.1 HU | FAI threshold, AUC 0.76 | CRISP-CT |
+| −70.1 HU | FAI threshold for increased cardiac mortality risk | CRISP-CT |
+| −190 to −30 HU | Voxel inclusion window for FAI algorithm (defines "fat" voxels, NOT the biological normal range) | Antonopoulos 2017, Oxford protocol |
 | n=40,091 | Largest FAI cohort | ORFAN extended |
 
 ### Technical confounders (establishes the measurement problem)
@@ -410,6 +415,16 @@ These are the numbers you will need in your introduction, discussion, and when r
 **Acknowledge**: "Conversion factors address the largest single confounder and are straightforward to implement."
 
 **Critique**: "This approach corrects only for tube voltage, leaving kernel, contrast timing, scanner, and patient size effects unaddressed."
+
+### 11.5 FAPI PET (Emerging — Know This for Reviewer Questions)
+
+**What it does**: Fibroblast activation protein inhibitor (FAPI) PET tracers directly image activated fibroblasts in inflamed tissue, including pericoronary regions. Unlike FAI (which infers inflammation from fat density), FAPI PET provides a direct molecular signal of active fibrosis/inflammation.
+
+**Acknowledge**: "FAPI PET represents a promising direct molecular imaging approach to coronary inflammation that does not depend on adipose tissue density."
+
+**Why it doesn't invalidate your work**: FAPI PET requires a PET/CT scanner with radiotracer injection — it is orders of magnitude more expensive, less available, involves radiation from the tracer, and cannot be derived from routine CCTA data. Material decomposition works with the CCTA scan patients already receive. These are complementary approaches at different points on the cost-accessibility spectrum.
+
+**If a reviewer asks**: "Material decomposition and FAPI PET address different clinical scenarios. Material decomposition provides composition-based inflammation assessment from routine PCCT CCTA data without additional acquisition, while FAPI PET offers direct molecular specificity at the cost of additional imaging, radiotracer exposure, and limited availability."
 
 ---
 

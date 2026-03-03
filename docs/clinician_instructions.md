@@ -10,7 +10,9 @@
 
 ## Purpose of This Document
 
-This document provides step-by-step instructions for the collaborating clinician who will help identify eligible patients from the clinical PCCT CCTA database and extract the required clinical data. The imaging analysis (material decomposition, FAI measurement) will be performed by the engineering team — **your role is patient identification, clinical data extraction, and coronary disease classification.**
+This is a **retrospective study** using existing PCCT CCTA scans already in your clinical database. We are NOT recruiting new patients or ordering new scans.
+
+This document provides step-by-step instructions for the collaborating clinician who will help review existing scans, identify eligible patients, and extract the required clinical data from electronic medical records. The imaging analysis (material decomposition, FAI measurement) will be performed by the engineering team — **your role is patient identification, clinical data extraction, and coronary disease classification from existing records and images.**
 
 ---
 
@@ -30,9 +32,9 @@ We need patients scanned on **photon-counting CT (PCCT)** with coronary CTA prot
 
 ## What We Need From You
 
-### Step 1: Screen for Eligible Patients
+### Step 1: Retrospective Chart Review — Identify Eligible Patients
 
-From your PCCT CCTA database, identify patients who meet **ALL** inclusion criteria and **NONE** of the exclusion criteria.
+From your existing PCCT CCTA database, identify patients who were previously scanned and who meet **ALL** inclusion criteria and **NONE** of the exclusion criteria.
 
 #### Inclusion Criteria (ALL must be met)
 
@@ -55,8 +57,12 @@ From your PCCT CCTA database, identify patients who meet **ALL** inclusion crite
 - [ ] Known active malignancy (any type)
 - [ ] Anomalous coronary artery origin from the wrong sinus
 - [ ] Severe motion artifacts making coronary assessment unreliable
+- [ ] Persistent or permanent atrial fibrillation (motion artifact confounder)
 - [ ] Scan performed without contrast (non-contrast only)
 - [ ] Congenital heart disease with altered coronary anatomy
+- [ ] Pregnant at time of scan
+- [ ] eGFR < 30 mL/min/1.73m² at time of scan (unless on dialysis)
+- [ ] On systemic anti-inflammatory therapy at time of scan (colchicine, biologics, chronic corticosteroids) — see note below
 
 #### Image Quality Notes
 
@@ -83,7 +89,13 @@ For every eligible patient, please provide:
 | **4B** | 70–99% in left main OR ≥ 70% in 3 vessels | Severe stenosis, left main or 3-vessel |
 | **5** | 100% | Total occlusion |
 
-#### B. Per-Vessel Assessment (Critical — We Need This for Each Vessel)
+#### B. Coronary Dominance
+
+- Right-dominant / Left-dominant / Co-dominant
+
+This affects which vessel supplies the posterior descending artery and is required for proper risk stratification.
+
+#### C. Per-Vessel Assessment (Critical — We Need This for Each Vessel)
 
 For **each** of the three major coronary arteries (LAD, LCx, RCA), please record:
 
@@ -100,7 +112,7 @@ For **each** of the three major coronary arteries (LAD, LCx, RCA), please record
 
 **Why per-vessel?** Our primary analysis compares pericoronary fat composition around a diseased vessel vs. a clean vessel in the same patient. We need to know which vessels are diseased and which are clean.
 
-#### C. Which Vessel is the "Culprit" (if applicable)
+#### D. Which Vessel is the "Culprit" (if applicable)
 
 If the patient presented with ACS (STEMI, NSTEMI, unstable angina):
 - Which vessel was the culprit? (based on ICA if available, or clinical presentation + CT features)
@@ -109,6 +121,19 @@ If the patient presented with ACS (STEMI, NSTEMI, unstable angina):
 
 If the patient did NOT present with ACS:
 - Mark "N/A" — no culprit vessel designation needed
+
+#### E. Scan-Related Clinical Data
+
+These are clinical variables at the time of scan that affect image quality and pericoronary fat measurement:
+
+| Variable | Value |
+|---|---|
+| Heart rate during scan (bpm) | ___ |
+| Beta-blocker given before scan? (Y/N) | ___ |
+| If yes: drug, dose, route, timing | ___ |
+| Nitroglycerin given before scan? (Y/N) | ___ |
+
+**Note**: Technical scan parameters (kVp, mAs, contrast volume, injection rate, reconstruction kernel) will be extracted from DICOM headers by the engineering team — you do NOT need to collect these.
 
 ---
 
@@ -185,9 +210,11 @@ For each eligible patient, please fill in the following. All data should reflect
 | Variable | Value |
 |---|---|
 | Total Agatston score | ___ |
-| LAD calcium score | ___ |
-| LCx calcium score | ___ |
-| RCA calcium score | ___ |
+| LAD calcium score (if available) | ___ |
+| LCx calcium score (if available) | ___ |
+| RCA calcium score (if available) | ___ |
+
+**Note**: Total Agatston score is the primary requirement. Per-vessel scores are helpful but not essential.
 
 ---
 
@@ -220,7 +247,7 @@ A: Ideally within 30 days of the CCTA. Up to 90 days is acceptable. Beyond that,
 A: Yes — as long as they have no stent (PCI) or bypass (CABG). Prior MI without intervention is acceptable. Note the MI date and territory.
 
 **Q: What about patients on colchicine or other anti-inflammatory therapy?**  
-A: Include them but document the medication carefully. Anti-inflammatory drugs may affect pericoronary fat composition, which is actually interesting for our study.
+A: **Exclude them from the primary analysis.** Anti-inflammatory drugs directly affect pericoronary fat composition, which is the variable we are measuring. However, please still flag these patients separately — they may be useful for a sensitivity analysis. Record the drug, dose, and duration if you identify them.
 
 **Q: How do I report plaque that's hard to classify?**  
 A: Use your best clinical judgment. If uncertain about a high-risk feature (e.g., questionable napkin-ring sign), mark it as "uncertain" rather than Y or N. We can review together.
@@ -242,9 +269,9 @@ For the imaging data (DICOM files), we will coordinate separately for transfer f
 
 | Milestone | Target Date |
 |---|---|
-| Begin patient screening | TBD |
-| Complete screening (eligible patient list) | TBD |
-| Complete clinical data extraction | TBD |
+| Begin retrospective chart review | TBD |
+| Complete eligible patient list | TBD |
+| Complete clinical data extraction from EMR | TBD |
 | Joint review of group assignments | TBD |
 
 **Questions?** Contact Shu Nie at [email] or Sabee Molloi at [email].

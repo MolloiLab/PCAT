@@ -3,7 +3,7 @@
 **Project**: PCAT — MolloiLab, University of California, Irvine  
 **Author**: Shu Nie  
 **Date**: March 2026  
-**Purpose**: How the field defines "healthy" vs. "diseased" PCAT, how "culprit" lesions are identified, and practical guidance for designing a clinical validation study using PCCT material decomposition — including the control group problem, group selection strategies, inclusion/exclusion criteria, and study design templates.
+**Purpose**: How the field defines "healthy" vs. "diseased" PCAT, how "culprit" lesions are identified, and practical guidance for designing a **retrospective** clinical validation study using existing PCCT CCTA scans with material decomposition — including the control group problem, group selection strategies, inclusion/exclusion criteria, and study design templates.
 
 ---
 
@@ -236,8 +236,11 @@ Based on published PCAT studies, these are the criteria most commonly used:
 | Known myocarditis, vasculitis, active systemic infection | Non-coronary inflammation confounds PCAT | Multiple |
 | Anomalous coronary artery origin | Abnormal anatomy prevents standardised measurement | Ma 2020 |
 | Poor image quality (motion artifacts, insufficient contrast) | Unreliable measurements | All studies |
-| Atrial fibrillation | Motion artifact | Feasibility studies |
+| Persistent or permanent atrial fibrillation | Motion artifact on CCTA | Feasibility studies, Kahmann 2024 |
 | Known malignancy | Systemic inflammation confounder | Chen 2021 |
+| Pregnancy at time of scan | Radiation exposure; altered hemodynamics | Standard for all CT studies |
+| eGFR < 30 mL/min/1.73m² (unless on dialysis) | Contrast nephropathy risk; altered fluid balance may affect PCAT | Standard for contrast CT studies |
+| Systemic anti-inflammatory therapy at time of scan | Colchicine, biologics, chronic corticosteroids directly alter PCAT composition — the variable being measured. Fiolet 2025 (LoDoCo2 substudy) showed colchicine's effect on PCAT is the very question under investigation | Recommended for composition studies |
 
 ### PCCT-Specific Considerations
 
@@ -251,6 +254,8 @@ Based on published PCAT studies, these are the criteria most commonly used:
 
 ## 8. Recommended Design for PCCT Material Decomposition Study
 
+> **Study type**: Retrospective analysis of existing PCCT CCTA scans with clinical data extracted from electronic medical records. No new patient recruitment or imaging is required.
+
 ### Primary Design: Within-Patient Vessel Comparison
 
 This is the **strongest** design for a first clinical validation paper because it:
@@ -260,27 +265,29 @@ This is the **strongest** design for a first clinical validation paper because i
 - Requires modest sample size (each patient provides paired data)
 
 **Protocol**:
-1. Select patients with **single-vessel or dominant-vessel** coronary disease (one vessel with significant stenosis or high-risk plaque, at least one clean vessel)
-2. For each patient, measure:
+1. From existing PCCT CCTA database, select patients with **single-vessel or dominant-vessel** coronary disease (one vessel with significant stenosis or high-risk plaque, at least one clean vessel)
+2. **Definition of "clean vessel"**: CAD-RADS 0 in that coronary territory — no visible plaque or stenosis. This is stricter than "no significant stenosis" and follows Ma et al. 2021, who compared arteries "with plaque" vs. "without plaque."
+3. For each patient, measure:
    - **Water fraction** (material decomposition) of PCAT around the diseased vessel
    - **Water fraction** of PCAT around the clean vessel
    - **FAI (HU)** of PCAT around both vessels
-3. Primary analysis: Paired comparison (Wilcoxon signed-rank or paired t-test) of water fraction between diseased vs. clean vessel
-4. Secondary analysis: Same comparison for FAI (HU) — expect FAI to show a difference too, but show that it's confounded across patients/protocols while water fraction is not
+4. Primary analysis: Paired comparison (Wilcoxon signed-rank or paired t-test) of water fraction between diseased vs. clean vessel
+5. Secondary analysis: Same comparison for FAI (HU) — expect FAI to show a difference too, but show that it's confounded across patients/protocols while water fraction is not
 
 **Methods paragraph you can adapt**:
 
-> "Truly healthy controls are unavailable in CCTA populations, as all patients were referred for clinical indications. We employed a within-patient vessel-level comparison, measuring pericoronary adipose tissue composition around both the diseased coronary vessel (defined by [CAD-RADS ≥ 3 / high-risk plaque features / ICA-confirmed culprit]) and an uninvolved vessel (CAD-RADS 0 in that territory) in the same patient. This paired design eliminates inter-patient confounders including age, sex, BMI, medication use, and imaging protocol."
+> "This retrospective study reviewed existing PCCT CCTA scans from [institution] acquired between [date range]. Truly healthy controls are unavailable in CCTA populations, as all patients were referred for clinical indications. We employed a within-patient vessel-level comparison, measuring pericoronary adipose tissue composition around both the diseased coronary vessel (defined by [CAD-RADS ≥ 3 / high-risk plaque features / ICA-confirmed culprit]) and an uninvolved vessel (CAD-RADS 0 in that territory, no visible plaque or stenosis) in the same patient. This paired design eliminates inter-patient confounders including age, sex, BMI, medication use, and imaging protocol. Clinical data were extracted retrospectively from electronic medical records."
 
 ### Secondary Design: CAD-RADS 0 vs. High-Risk Plaque (Between-Patient)
 
 Use this as a **supplementary analysis** or if within-patient comparison is not feasible for all patients:
 
 **Protocol**:
-1. **Group A** (pseudo-healthy): CAD-RADS 0, calcium score 0
-2. **Group B** (diseased): ≥ 2 high-risk plaque features (positive remodeling, LAP < 30 HU, spotty calcification, napkin-ring sign)
-3. Match 1:1 or 1:2 by age (± 5 years), sex, BMI (± 3 kg/m²)
-4. Compare water fraction and FAI between groups
+1. From the same retrospective database:
+2. **Group A** (pseudo-healthy): CAD-RADS 0, calcium score 0
+3. **Group B** (diseased): ≥ 2 high-risk plaque features (positive remodeling, LAP < 30 HU, spotty calcification, napkin-ring sign)
+4. Match 1:1 or 1:2 by age (± 5 years), sex, BMI (± 3 kg/m²), hypertension (Y/N), diabetes (Y/N), statin use (Y/N). Propensity score matching is preferred over manual matching for reproducibility.
+5. Compare water fraction and FAI between groups
 
 ### The Narrative Arc: Simulation → Clinical
 
@@ -293,7 +300,24 @@ The two papers form a logical sequence:
 | **Limitation addressed** | "Only simulation" | "Now validated in vivo" |
 | **Control** | Same phantom, different composition | Same patient, different vessel (or matched groups) |
 
-**One-sentence bridge for grant/paper**: "Having established under controlled simulation conditions that material decomposition detects inflammation-related PCAT composition changes that HU-based FAI cannot (Nie & Molloi 2025), this study validates the approach in vivo using photon-counting CT in patients with and without coronary artery disease."
+**One-sentence bridge for grant/paper**: "Having established under controlled simulation conditions that material decomposition detects inflammation-related PCAT composition changes that HU-based FAI cannot (Nie & Molloi 2025), this retrospective study validates the approach in vivo using photon-counting CT in patients with and without coronary artery disease."
+
+### Sample Size Considerations
+
+The minimum target of n ≥ 30 per group is based on comparable PCCT PCAT studies:
+- Kahmann 2024: n=36 total (18 CAD + 18 matched controls)
+- Tremamunno 2025: n=40 (intra-individual PCD vs. EID comparison)
+- Chen 2021: n=104 (dual-layer spectral CT, larger but different technology)
+
+n=30 per group is the minimum for adequate statistical power in paired comparisons. **A formal power calculation is required before finalising the study** — base it on the expected effect size for water fraction differences between healthy and inflamed PCAT from Nie & Molloi 2025 simulation results. If the expected effect size is small (< 0.5 SD), consider increasing to n=40–50 per group.
+
+For the within-patient paired design, power requirements are lower than for between-patient comparisons because inter-patient variability is eliminated.
+
+### Group C Definition Justification
+
+Group C is defined as "CAD-RADS 3–5, OR ≥ 2 high-risk plaque features in any vessel." This means a patient with CAD-RADS 3 (50–69% stenosis) but zero high-risk plaque features is still classified as "high-risk."
+
+**Justification**: CAD-RADS ≥ 3 represents ≥ 50% stenosis, which is an established independent risk factor for MACE regardless of plaque morphology. The OR criterion ensures that both anatomically significant disease (by stenosis severity) and morphologically high-risk disease (by plaque features) are captured. This is consistent with Chen et al. 2021, who used ≥ 2 high-risk features, and with CAD-RADS 2.0 guidelines, which classify ≥ 50% stenosis as warranting further investigation.
 
 ---
 

@@ -305,7 +305,7 @@ def run_patient(
             if wp and all(v is not None for v in wp):
                 all_seed_pts.append(wp)
 
-    print("\n[pipeline] Computing Frangi vesselness filter (ROI-cropped — should take ~100s)...")
+    print("\n[pipeline] Computing Frangi vesselness filter (ROI-cropped — ~120s)...")
     t_v = time.time()
     vesselness = compute_vesselness(
         volume, spacing_mm,

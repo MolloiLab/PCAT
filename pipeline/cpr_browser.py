@@ -6,7 +6,7 @@ Shows two linked panels:
   Left  — Straightened CPR (vessel top→bottom, ostium at top).
            A movable horizontal needle line indicates the current position.
   Right — Orthogonal cross-section at the needle position:
-           True N-B plane sampling with vessel lumen circle (white) and PCAT VOI
+           Actual vessel lumen contour (white) and PCAT VOI
            ring (semi-transparent yellow) overlaid.
 
 Rotation slider rotates the cutting plane around the vessel axis (rotational CPR).
@@ -240,7 +240,7 @@ class CPRBrowser:
         # ── Initial cross-section ─────────────────────────────────────────
         self._xs_im       = None   # imshow handle for grayscale cross-section
         self._xs_fai_im   = None   # imshow handle for FAI overlay
-        self._xs_lumen    = None   # Circle patch for lumen (faint reference)
+
         self._xs_contours = []     # List of contour line objects for actual vessel boundary
         self._xs_voi_ring = None   # Circle patch for VOI outer boundary
         self._xs_needle_txt = None # Text annotation in cross-section panel
@@ -447,8 +447,7 @@ class CPRBrowser:
         r_voi_mm   = r_lumen_mm * 3.0  # VOI outer boundary = 3× vessel radius (Bug 3 fix)
 
         # Remove old patches and contours
-        if self._xs_lumen is not None:
-            self._xs_lumen.remove()
+
         if self._xs_voi_ring is not None:
             self._xs_voi_ring.remove()
         for contour_line in self._xs_contours:
@@ -490,14 +489,7 @@ class CPRBrowser:
             )
             self._xs_contours.append(contour_line)
 
-        # ── Faint reference circle (estimated lumen radius) ──────────────────
-        self._xs_lumen = mpatches.Circle(
-            (0, 0), radius=r_lumen_mm,
-            fill=False, edgecolor="#888888", linewidth=1.0, linestyle="--",
-            label=f"Estimated lumen (r={r_lumen_mm:.1f} mm)",
-            zorder=4, alpha=0.6,
-        )
-        self.ax_cross.add_patch(self._xs_lumen)
+
 
         self._xs_voi_ring = mpatches.Circle(
             (0, 0), radius=r_voi_mm,
@@ -730,7 +722,7 @@ class CPRBrowser:
         """Display the interactive browser window (blocks until closed)."""
         # Rebuild legend for cross-section
         self.ax_cross.legend(
-            handles=[self._xs_lumen, self._xs_voi_ring],
+            handles=[self._xs_voi_ring],
             loc="lower right",
             fontsize=8,
             facecolor="#0d0d1a",

@@ -62,8 +62,13 @@ from scipy.interpolate import CubicSpline
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
-# Disable matplotlib's default 's' = save-figure keybinding
-plt.rcParams['keymap.save'] = []
+# Disable matplotlib default keybindings that conflict with our controls
+plt.rcParams['keymap.save'] = []       # 's' = our save
+plt.rcParams['keymap.back'] = []       # 'backspace'/'left' = our delete/cycle
+plt.rcParams['keymap.forward'] = []    # 'right' = our cycle
+plt.rcParams['keymap.home'] = ['h']    # keep 'h' but remove 'r' = our reset
+plt.rcParams['keymap.fullscreen'] = [] # remove 'f' just in case
+plt.rcParams['keymap.quit'] = []       # 'q' = our quit
 
 # Add project root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -539,6 +544,12 @@ class SeedEditor:
         self.fig.canvas.mpl_connect('button_release_event', self._on_mouse_release)
         self.fig.canvas.mpl_connect('key_press_event', self._on_key_press)
         self.fig.canvas.mpl_connect('scroll_event', self._on_scroll)
+
+        # Ensure canvas has keyboard focus (macOS TkAgg requires this)
+        try:
+            self.fig.canvas.get_tk_widget().focus_set()
+        except AttributeError:
+            pass  # Non-Tk backend
     
     def _clim(self) -> Tuple[float, float]:
         """Get color limits for window/level."""
@@ -1130,6 +1141,11 @@ class SeedEditor:
     
     def _on_mouse_press(self, event) -> None:
         """Handle mouse press: select, drag, or add seeds."""
+        # Ensure canvas keeps keyboard focus after click
+        try:
+            self.fig.canvas.get_tk_widget().focus_set()
+        except AttributeError:
+            pass
         if event.inaxes not in [self.ax_coronal, self.ax_axial]:
             return
         if event.xdata is None or event.ydata is None:
@@ -1274,7 +1290,7 @@ class SeedEditor:
     def _on_key_press(self, event) -> None:
         """Handle keyboard events."""
         key = event.key
-        
+
         if key == 'q':
             print("[seed_editor] Quit without saving")
             plt.close(self.fig)
@@ -1309,7 +1325,7 @@ class SeedEditor:
             self._recompute_current_centerline()
             self._save_state()
             self._update_display()
-        elif key == 'return':
+        elif key in ('return', 'enter'):
             # Add waypoint at current cursor position
             if event.inaxes not in [self.ax_coronal, self.ax_axial]:
                 print("[seed_editor] Hover mouse over a MIP view, then press Enter")

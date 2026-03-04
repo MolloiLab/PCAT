@@ -29,7 +29,7 @@ Interaction:
   - Left click → select nearest seed (highlight it)
   - Left click on selected seed → drag to reposition
   - ← → arrow keys → cycle selection prev/next
-  - Enter → insert midpoint seed between selected and next
+  - Enter → add waypoint at cursor position
   - Backspace → delete selected seed
   - Right click → delete nearest waypoint
   - Scroll wheel: adjust MIP slab center
@@ -495,7 +495,7 @@ class SeedEditor:
         
         # Title with controls hint
         self.fig.suptitle(
-            "Left-click: select seed  |  Left-click+drag: move selected  |  Enter: insert midpoint  |  Backspace: delete selected  |  Right-click: delete waypoint\n"
+            "Left-click: select seed  |  Left-click+drag: move selected  |  Enter: add waypoint  |  Backspace: delete selected  |  Right-click: delete waypoint\n"
             "←→ arrows: cycle selection  |  Scroll: slab center  |  Shift+scroll: slab thickness  |  1/2/3: Vessel  |  u: Undo  |  r: Reset  |  s: Save  |  q: Quit",
             fontsize=10,
         )
@@ -1290,26 +1290,35 @@ class SeedEditor:
             self._save_state()
             self._update_display()
         elif key == 'return':
-            # Insert midpoint between selected and next seed
+            # Add waypoint at current cursor position
+            if event.inaxes not in [self.ax_coronal, self.ax_axial]:
+                print("[seed_editor] Hover mouse over a MIP view, then press Enter")
+                return
+            if event.xdata is None or event.ydata is None:
+                return
+            ix, iy = int(round(event.xdata)), int(round(event.ydata))
             v = self.current_vessel
-            all_seeds = self._get_all_seeds_for_vessel(v)
-            if self._selected_idx is None:
-                print("[seed_editor] No seed selected — select one first")
-                return
-            if self._selected_idx >= len(all_seeds) - 1:
-                print("[seed_editor] Selected seed is the last one — cannot insert after")
-                return
-            # Compute midpoint
-            p1 = np.array(all_seeds[self._selected_idx], dtype=np.float64)
-            p2 = np.array(all_seeds[self._selected_idx + 1], dtype=np.float64)
-            mid = np.round((p1 + p2) / 2.0).astype(int).tolist()
-            # Determine insertion position in waypoints list
+            if event.inaxes == self.ax_coronal:
+                actual_z = self.volume_shape[0] - 1 - iy  # flipud
+                z, y, x = actual_z, self.y_center[v], ix
+            else:
+                z, y, x = self.z_center[v], iy, ix
+            z = int(np.clip(z, 0, self.volume_shape[0] - 1))
+            y = int(np.clip(y, 0, self.volume_shape[1] - 1))
+            x = int(np.clip(x, 0, self.volume_shape[2] - 1))
+            # Insert after selected seed, or append at end
             has_ostium = self.seeds[v]["ostium"] is not None
-            wp_insert_idx = (self._selected_idx + 1) - (1 if has_ostium else 0)
-            wp_insert_idx = max(0, wp_insert_idx)
-            self.seeds[v]["waypoints"].insert(wp_insert_idx, mid)
-            self._selected_idx += 1  # Select the newly inserted seed
-            print(f"[seed_editor] Inserted midpoint at {mid}, selected #{self._selected_idx}")
+            all_seeds = self._get_all_seeds_for_vessel(v)
+            if self._selected_idx is not None and self._selected_idx < len(all_seeds):
+                wp_insert_idx = (self._selected_idx + 1) - (1 if has_ostium else 0)
+                wp_insert_idx = max(0, min(wp_insert_idx, len(self.seeds[v]["waypoints"])))
+                self.seeds[v]["waypoints"].insert(wp_insert_idx, [z, y, x])
+                self._selected_idx += 1
+            else:
+                self.seeds[v]["waypoints"].append([z, y, x])
+                all_seeds = self._get_all_seeds_for_vessel(v)
+                self._selected_idx = len(all_seeds) - 1
+            print(f"[seed_editor] Added {v} waypoint at ({z}, {y}, {x})")
             self._recompute_current_centerline()
             self._save_state()
             self._update_display()
@@ -1424,7 +1433,7 @@ def main() -> None:
             "  Left-click              Select nearest seed (highlight it)\n"
             "  Left-click+drag         Move selected seed\n"
             "  ← → arrows              Cycle selection prev/next\n"
-            "  Enter                   Insert midpoint between selected and next\n"
+            "  Enter                   Add waypoint at cursor position\n"
             "  Backspace               Delete selected seed\n"
             "  Right-click             Delete nearest waypoint\n"
             "  Scroll                  Adjust MIP slab center\n"

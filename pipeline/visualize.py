@@ -1330,6 +1330,33 @@ def _sample_volume_cubic(
     return vals.reshape(shape_in)
 
 
+def _sample_volume_linear(
+    volume: np.ndarray,
+    vox_size: np.ndarray,
+    pts_mm: np.ndarray,
+) -> np.ndarray:
+    """
+    Fast linear interpolation of the CT volume at arbitrary mm positions.
+    Uses order=1 (trilinear) — ~10× faster than cubic for interactive use.
+    """
+    shape_in = pts_mm.shape[:-1]
+    pts_flat = pts_mm.reshape(-1, 3)
+    pts_vox = pts_flat / vox_size[np.newaxis, :]
+    z_v, y_v, x_v = pts_vox[:, 0], pts_vox[:, 1], pts_vox[:, 2]
+    vol_shape = np.array(volume.shape, dtype=np.float64)
+    valid = (
+        (z_v >= 0) & (z_v <= vol_shape[0] - 1) &
+        (y_v >= 0) & (y_v <= vol_shape[1] - 1) &
+        (x_v >= 0) & (x_v <= vol_shape[2] - 1)
+    )
+    vals = map_coordinates(
+        volume, [z_v, y_v, x_v],
+        order=1, mode='nearest', cval=0.0,
+    ).astype(np.float32)
+    vals[~valid] = np.nan
+    return vals.reshape(shape_in)
+
+
 def _build_cpr_image(
     volume: np.ndarray,
     vox_size: np.ndarray,
@@ -1395,6 +1422,44 @@ def _build_cpr_image(
         not_nan  = ~np.isnan(vals)
         slab_max[better & not_nan] = vals[better & not_nan]
 
+    slab_max[np.isneginf(slab_max)] = np.nan
+    return slab_max
+
+
+def _build_cpr_image_fast(
+    volume: np.ndarray,
+    vox_size: np.ndarray,
+    positions: np.ndarray,
+    normals: np.ndarray,
+    binormals: np.ndarray,
+    n_rows: int,
+    row_extent_mm: float,
+    slab_mm: float = 0.0,
+) -> np.ndarray:
+    """
+    Fast CPR image using trilinear interpolation for interactive editing.
+    Same API as _build_cpr_image but uses order=1 (~10× faster).
+    Default slab_mm=0.0 (single plane) for maximum speed.
+    """
+    n_cols = len(positions)
+    row_offsets = np.linspace(row_extent_mm, -row_extent_mm, n_rows)
+    pts_base = (
+        positions[np.newaxis, :, :]
+        + row_offsets[:, np.newaxis, np.newaxis]
+        * normals[np.newaxis, :, :]
+    )
+    if slab_mm <= 0:
+        return _sample_volume_linear(volume, vox_size, pts_base)
+    mean_sp = float(np.mean(vox_size))
+    n_slab = max(1, int(np.round(slab_mm / mean_sp)))
+    slab_offsets = np.linspace(-slab_mm / 2.0, slab_mm / 2.0, n_slab)
+    slab_max = np.full((n_rows, n_cols), -np.inf, dtype=np.float32)
+    for s_off in slab_offsets:
+        pts = pts_base + s_off * binormals[np.newaxis, :, :]
+        vals = _sample_volume_linear(volume, vox_size, pts)
+        better = vals > slab_max
+        not_nan = ~np.isnan(vals)
+        slab_max[better & not_nan] = vals[better & not_nan]
     slab_max[np.isneginf(slab_max)] = np.nan
     return slab_max
 

@@ -26,17 +26,16 @@ Layout (figsize=(20, 10)):
 └────────────────────────────────────────────┘
 
 Interaction:
-  - Left click near existing seed (within 10 voxels) → drag to reposition
-  - Left click elsewhere → add new waypoint for current vessel
-  - Right click near waypoint → delete it
-  - Scroll wheel: adjust MIP slab center position
+  - Left click → select nearest seed (highlight it)
+  - Left click on selected seed → drag to reposition
+  - ← → arrow keys → cycle selection prev/next
+  - Enter → insert midpoint seed between selected and next
+  - d → delete selected seed
+  - Right click → delete nearest waypoint
+  - Scroll wheel: adjust MIP slab center
   - Shift+scroll: adjust slab thickness (±2mm, range 5-50mm)
-  - 1/2/3 keys: switch vessel (LAD/LCX/RCA)
-  - d key: delete nearest waypoint
-  - u key: undo
-  - r key: reset current vessel
-  - s key: save and close
-  - q key: quit without saving
+  - 1/2/3: switch vessel (resets selection)
+  - u: undo | r: reset vessel | s: save | q: quit
 
 Usage:
     python pipeline/seed_editor.py \
@@ -325,6 +324,9 @@ class SeedEditor:
         
         # Interaction state
         self.dragging_seed: Optional[Tuple[str, str, List[int]]] = None  # (vessel, type, original_pos)
+        self._selected_idx: Optional[int] = None  # index into _get_all_seeds_for_vessel(current_vessel)
+        self._coronal_selection_ring = None  # scatter artist for yellow highlight ring
+        self._axial_selection_ring = None    # scatter artist for yellow highlight ring
         
         # History for undo
         self.history: List[Dict] = []
@@ -400,6 +402,7 @@ class SeedEditor:
             self.y_center = prev_state["y_center"]
             self.z_center = prev_state["z_center"]
             self._recompute_all_centerlines()
+            self._selected_idx = None
             print("[seed_editor] Undo")
             self._update_display()
         else:
@@ -410,6 +413,7 @@ class SeedEditor:
         v = self.current_vessel
         self.seeds[v] = {"ostium": None, "waypoints": []}
         self.centerlines[v] = None
+        self._selected_idx = None
         self._save_state()
         print(f"[seed_editor] Reset {v}")
         self._update_display()
@@ -418,6 +422,7 @@ class SeedEditor:
         """Switch to a different vessel."""
         if vessel_name in VESSEL_KEYS:
             self.current_vessel = vessel_name
+            self._selected_idx = None
             print(f"[seed_editor] Switched to {vessel_name}")
             self._update_display()
     
@@ -428,6 +433,32 @@ class SeedEditor:
             pts.append(self.seeds[vessel]["ostium"])
         pts.extend(self.seeds[vessel]["waypoints"])
         return pts
+    
+    def _get_seed_index_from_type(self, vessel: str, seed_type_str: str) -> int:
+        """Convert seed_type string ("ostium" or "waypoint_N") to index in all_seeds list."""
+        if seed_type_str == "ostium":
+            return 0
+        # "waypoint_N" → index is N + (1 if ostium exists else 0)
+        wp_idx = int(seed_type_str.split("_")[1])
+        offset = 1 if self.seeds[vessel]["ostium"] is not None else 0
+        return wp_idx + offset
+
+    def _get_selected_seed_info(self) -> Optional[Tuple[str, List[int]]]:
+        """Get (seed_type_str, position) for currently selected seed, or None."""
+        if self._selected_idx is None:
+            return None
+        v = self.current_vessel
+        all_seeds = self._get_all_seeds_for_vessel(v)
+        if not all_seeds or self._selected_idx >= len(all_seeds):
+            self._selected_idx = None
+            return None
+        pos = all_seeds[self._selected_idx]
+        # Determine type string
+        has_ostium = self.seeds[v]["ostium"] is not None
+        if has_ostium and self._selected_idx == 0:
+            return ("ostium", pos)
+        wp_idx = self._selected_idx - (1 if has_ostium else 0)
+        return (f"waypoint_{wp_idx}", pos)
     
     def _recompute_all_centerlines(self) -> None:
         """Recompute centerlines for all vessels."""
@@ -464,10 +495,8 @@ class SeedEditor:
         
         # Title with controls hint
         self.fig.suptitle(
-            "Left-click: add/drag seeds  |  Right-click: delete waypoint  |  "
-            "Scroll: slab center  |  Shift+scroll: slab thickness\n"
-            "1/2/3: Vessel  |  d: Delete nearest  |  u: Undo  |  r: Reset  |  "
-            "s: Save  |  q: Quit",
+            "Left-click: select seed  |  Left-click+drag: move selected  |  Enter: insert midpoint  |  d: delete selected  |  Right-click: delete waypoint\n"
+            "←→ arrows: cycle selection  |  Scroll: slab center  |  Shift+scroll: slab thickness  |  1/2/3: Vessel  |  u: Undo  |  r: Reset  |  s: Save  |  q: Quit",
             fontsize=10,
         )
         
@@ -586,6 +615,13 @@ class SeedEditor:
                     edgecolors='white', linewidths=0.8,
                     alpha=1.0, zorder=4,
                 )
+            
+            # Selection ring
+            self._coronal_selection_ring = self.ax_coronal.scatter(
+                [], [], c='none', s=200, marker='o',
+                edgecolors='yellow', linewidths=3.0,
+                alpha=1.0, zorder=10,
+            )
         else:
             # Update existing artists
             self._coronal_im.set_data(mip_display)
@@ -661,6 +697,28 @@ class SeedEditor:
             self._coronal_seed_scatters[vessel_name]["ostium"].set_alpha(alpha)
             self._coronal_seed_scatters[vessel_name]["waypoints"].set_alpha(alpha)
         
+        # Update selection ring
+        if self._selected_idx is not None:
+            info = self._get_selected_seed_info()
+            if info is not None:
+                _, pos = info
+                sz, sy, sx = pos
+                y_center = self.y_center[self.current_vessel]
+                slab_vox_y = int(np.round(self.slab_mm / self.spacing_mm[1] / 2))
+                slab_vox_y = max(1, slab_vox_y)
+                if abs(sy - y_center) <= slab_vox_y:
+                    flipped_z = self.volume_shape[0] - 1 - sz
+                    self._coronal_selection_ring.set_offsets(
+                        np.array([[sx, flipped_z]], dtype=np.float64)
+                    )
+                else:
+                    self._coronal_selection_ring.set_offsets(np.empty((0, 2), dtype=np.float64))
+            else:
+                self._coronal_selection_ring.set_offsets(np.empty((0, 2), dtype=np.float64))
+        else:
+            if self._coronal_selection_ring is not None:
+                self._coronal_selection_ring.set_offsets(np.empty((0, 2), dtype=np.float64))
+        
         self.ax_coronal.set_title(
             f"Coronal MIP (Y={y_center}, slab={self.slab_mm:.0f}mm)",
             fontsize=10
@@ -720,6 +778,13 @@ class SeedEditor:
                     edgecolors='white', linewidths=0.8,
                     alpha=1.0, zorder=4,
                 )
+            
+            # Selection ring
+            self._axial_selection_ring = self.ax_axial.scatter(
+                [], [], c='none', s=200, marker='o',
+                edgecolors='yellow', linewidths=3.0,
+                alpha=1.0, zorder=10,
+            )
         else:
             # Update existing artists
             self._axial_im.set_data(mip_norm)
@@ -793,6 +858,27 @@ class SeedEditor:
             # Update alpha for both scatter plots
             self._axial_seed_scatters[vessel_name]["ostium"].set_alpha(alpha)
             self._axial_seed_scatters[vessel_name]["waypoints"].set_alpha(alpha)
+        
+        # Update selection ring
+        if self._selected_idx is not None:
+            info = self._get_selected_seed_info()
+            if info is not None:
+                _, pos = info
+                sz, sy, sx = pos
+                z_center = self.z_center[self.current_vessel]
+                slab_vox_z = int(np.round(self.slab_mm / self.spacing_mm[0] / 2))
+                slab_vox_z = max(1, slab_vox_z)
+                if abs(sz - z_center) <= slab_vox_z:
+                    self._axial_selection_ring.set_offsets(
+                        np.array([[sx, sy]], dtype=np.float64)
+                    )
+                else:
+                    self._axial_selection_ring.set_offsets(np.empty((0, 2), dtype=np.float64))
+            else:
+                self._axial_selection_ring.set_offsets(np.empty((0, 2), dtype=np.float64))
+        else:
+            if self._axial_selection_ring is not None:
+                self._axial_selection_ring.set_offsets(np.empty((0, 2), dtype=np.float64))
         
         self.ax_axial.set_title(
             f"Axial MIP (Z={z_center}, slab={self.slab_mm:.0f}mm)",
@@ -911,7 +997,8 @@ class SeedEditor:
                 f"Waypoints: {n_waypoints}  |  "
                 f"Total seeds: {n_seeds}  |  "
                 f"Slab: {self.slab_mm:.0f}mm  |  "
-                f"W/L: {WW}/{WL}"
+                f"W/L: {WW}/{WL}  |  "
+                f"Selected: #{self._selected_idx if self._selected_idx is not None else 'none'}"
             )
             self._status_info_text = self.ax_status.text(
                 0.30, 0.5, msg,
@@ -936,7 +1023,8 @@ class SeedEditor:
                 f"Waypoints: {n_waypoints}  |  "
                 f"Total seeds: {n_seeds}  |  "
                 f"Slab: {self.slab_mm:.0f}mm  |  "
-                f"W/L: {WW}/{WL}"
+                f"W/L: {WW}/{WL}  |  "
+                f"Selected: #{self._selected_idx if self._selected_idx is not None else 'none'}"
             )
             self._status_info_text.set_text(msg)
             self._status_info_text.set_color(color)
@@ -1023,7 +1111,7 @@ class SeedEditor:
     # ─────────────────────────────────────────────────────────────────────────
     
     def _on_mouse_press(self, event) -> None:
-        """Handle mouse press for dragging or adding seeds."""
+        """Handle mouse press: select, drag, or add seeds."""
         if event.inaxes not in [self.ax_coronal, self.ax_axial]:
             return
         if event.xdata is None or event.ydata is None:
@@ -1034,7 +1122,6 @@ class SeedEditor:
         
         # Determine (z, y, x) seed position based on which view
         if ax == self.ax_coronal:
-            # Coronal: x = x, y = flipped_z
             actual_z = self.volume_shape[0] - 1 - iy
             z, y, x = actual_z, self.y_center[self.current_vessel], ix
         else:  # axial
@@ -1047,25 +1134,37 @@ class SeedEditor:
         
         v = self.current_vessel
         
-        # Left click
+        # Left click: select or drag
         if event.button == 1:
-            # Check if clicking near a seed for dragging
             nearest = self._find_nearest_seed(z, y, x, v)
             if nearest:
                 vessel, seed_type, pos = nearest
-                self.dragging_seed = (vessel, seed_type, pos)
-                print(f"[seed_editor] Started dragging {vessel} {seed_type}")
+                clicked_idx = self._get_seed_index_from_type(vessel, seed_type)
+                
+                if self._selected_idx == clicked_idx:
+                    # Already selected → start drag
+                    self.dragging_seed = (vessel, seed_type, list(pos))
+                    print(f"[seed_editor] Dragging {vessel} {seed_type}")
+                else:
+                    # Select this seed
+                    self._selected_idx = clicked_idx
+                    print(f"[seed_editor] Selected seed #{clicked_idx} ({seed_type})")
+                    self._update_display()
             else:
-                # Add new waypoint
-                self.seeds[v]["waypoints"].append([z, y, x])
-                print(f"[seed_editor] {v} waypoint {len(self.seeds[v]['waypoints'])}: ({z}, {y}, {x})")
-                self._recompute_current_centerline()
-                self._save_state()
-                self._update_display()
+                # Clicked empty space → deselect
+                if self._selected_idx is not None:
+                    self._selected_idx = None
+                    print("[seed_editor] Deselected")
+                    self._update_display()
         
-        # Right click — delete waypoint
+        # Right click — delete nearest waypoint (unchanged)
         elif event.button == 3:
             if self._delete_nearest_waypoint(z, y, x, v):
+                # Adjust selection index after deletion
+                all_seeds = self._get_all_seeds_for_vessel(v)
+                if self._selected_idx is not None:
+                    if self._selected_idx >= len(all_seeds):
+                        self._selected_idx = len(all_seeds) - 1 if all_seeds else None
                 self._update_display()
     
     def _on_mouse_motion(self, event) -> None:
@@ -1166,13 +1265,78 @@ class SeedEditor:
         elif key == 'r':
             self._reset_vessel()
         elif key == 'd':
-            # Delete nearest waypoint to slab center
+            # Delete selected seed
             v = self.current_vessel
-            z = self.z_center[v]
-            y = self.y_center[v]
-            x = self.volume_shape[2] // 2
-            if self._delete_nearest_waypoint(z, y, x, v):
-                self._update_display()
+            info = self._get_selected_seed_info()
+            if info is None:
+                print("[seed_editor] No seed selected — press left-click to select one")
+                return
+            seed_type, pos = info
+            if seed_type == "ostium":
+                self.seeds[v]["ostium"] = None
+                print(f"[seed_editor] Deleted {v} ostium")
+            else:
+                wp_idx = int(seed_type.split("_")[1])
+                if 0 <= wp_idx < len(self.seeds[v]["waypoints"]):
+                    removed = self.seeds[v]["waypoints"].pop(wp_idx)
+                    print(f"[seed_editor] Deleted {v} {seed_type}: {removed}")
+            # Clamp selection
+            all_seeds = self._get_all_seeds_for_vessel(v)
+            if not all_seeds:
+                self._selected_idx = None
+            elif self._selected_idx is not None and self._selected_idx >= len(all_seeds):
+                self._selected_idx = len(all_seeds) - 1
+            self._recompute_current_centerline()
+            self._save_state()
+            self._update_display()
+        elif key == 'return':
+            # Insert midpoint between selected and next seed
+            v = self.current_vessel
+            all_seeds = self._get_all_seeds_for_vessel(v)
+            if self._selected_idx is None:
+                print("[seed_editor] No seed selected — select one first")
+                return
+            if self._selected_idx >= len(all_seeds) - 1:
+                print("[seed_editor] Selected seed is the last one — cannot insert after")
+                return
+            # Compute midpoint
+            p1 = np.array(all_seeds[self._selected_idx], dtype=np.float64)
+            p2 = np.array(all_seeds[self._selected_idx + 1], dtype=np.float64)
+            mid = np.round((p1 + p2) / 2.0).astype(int).tolist()
+            # Determine insertion position in waypoints list
+            has_ostium = self.seeds[v]["ostium"] is not None
+            wp_insert_idx = (self._selected_idx + 1) - (1 if has_ostium else 0)
+            wp_insert_idx = max(0, wp_insert_idx)
+            self.seeds[v]["waypoints"].insert(wp_insert_idx, mid)
+            self._selected_idx += 1  # Select the newly inserted seed
+            print(f"[seed_editor] Inserted midpoint at {mid}, selected #{self._selected_idx}")
+            self._recompute_current_centerline()
+            self._save_state()
+            self._update_display()
+        elif key == 'left':
+            # Cycle selection backward
+            v = self.current_vessel
+            all_seeds = self._get_all_seeds_for_vessel(v)
+            if not all_seeds:
+                return
+            if self._selected_idx is None:
+                self._selected_idx = 0
+            else:
+                self._selected_idx = max(0, self._selected_idx - 1)
+            print(f"[seed_editor] Selected seed #{self._selected_idx}")
+            self._update_display()
+        elif key == 'right':
+            # Cycle selection forward
+            v = self.current_vessel
+            all_seeds = self._get_all_seeds_for_vessel(v)
+            if not all_seeds:
+                return
+            if self._selected_idx is None:
+                self._selected_idx = 0
+            else:
+                self._selected_idx = min(len(all_seeds) - 1, self._selected_idx + 1)
+            print(f"[seed_editor] Selected seed #{self._selected_idx}")
+            self._update_display()
         elif key == '1':
             self._switch_vessel('LAD')
         elif key == '2':
@@ -1234,11 +1398,11 @@ class SeedEditor:
     def run(self) -> None:
         """Run the interactive editor (blocks until window is closed)."""
         print("\n=== PCAT Seed Editor ===")
-        print("Keys:  1/2/3 = Switch vessel  |  d = Delete nearest waypoint")
-        print("       u = Undo  |  r = Reset vessel  |  s = Save & close  |  q = Quit")
+        print("Keys:  1/2/3 = Switch vessel  |  ←→ = Cycle selection  |  d = Delete selected")
+        print("       Enter = Insert midpoint  |  u = Undo  |  r = Reset vessel  |  s = Save & close  |  q = Quit")
         print("Interaction:")
-        print("  - Left-click near seed to drag, elsewhere to add waypoint")
-        print("  - Right-click on waypoint to delete")
+        print("  - Left-click to select seed, click+drag to move selected seed")
+        print("  - Right-click to delete nearest waypoint")
         print("  - Scroll to adjust MIP slab center")
         print("  - Shift+scroll to adjust slab thickness\n")
         plt.show()
@@ -1257,13 +1421,15 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Controls:\n"
-            "  Left-click near seed    Drag to reposition\n"
-            "  Left-click elsewhere    Add new waypoint\n"
-            "  Right-click on waypoint Delete it\n"
+            "  Left-click              Select nearest seed (highlight it)\n"
+            "  Left-click+drag         Move selected seed\n"
+            "  ← → arrows              Cycle selection prev/next\n"
+            "  Enter                   Insert midpoint between selected and next\n"
+            "  d                       Delete selected seed\n"
+            "  Right-click             Delete nearest waypoint\n"
             "  Scroll                  Adjust MIP slab center\n"
             "  Shift+scroll            Adjust slab thickness (5-50mm)\n"
-            "  1/2/3                   Switch vessel (LAD/LCX/RCA)\n"
-            "  d                       Delete nearest waypoint to cursor\n"
+            "  1/2/3                   Switch vessel (LAD/LCX/RCA, resets selection)\n"
             "  u                       Undo last action\n"
             "  r                       Reset current vessel (clear all seeds)\n"
             "  s                       Save and close\n"

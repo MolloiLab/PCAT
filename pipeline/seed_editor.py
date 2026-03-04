@@ -350,6 +350,18 @@ class SeedEditor:
         self._coronal_seed_scatters: Dict[str, Dict[str, Any]] = {}
         self._axial_seed_scatters: Dict[str, Dict[str, Any]] = {}
         
+        # MIP caches: (center, slab_vox, mip_data)
+        self._cached_coronal_mip: Optional[Tuple[int, int, np.ndarray]] = None
+        self._cached_axial_mip: Optional[Tuple[int, int, np.ndarray]] = None
+        
+        # Text handles for CPR panel
+        self._cpr_text_no_seeds = None
+        self._cpr_text_failed = None
+        
+        # Text handles for status bar
+        self._status_vessel_texts: List[Any] = []
+        self._status_info_text = None
+        
         # Build GUI
         self._build_gui()
         self._update_display()
@@ -519,17 +531,23 @@ class SeedEditor:
     
     def _draw_coronal_mip(self) -> None:
         """Draw coronal MIP with seeds and spline overlay."""
-        self.ax_coronal.cla()
-        
         v = self.current_vessel
-        color = VESSEL_COLORS[v]
+
         
         # Compute MIP (project Y axis)
         y_center = self.y_center[v]
         slab_vox = int(np.round(self.slab_mm / self.spacing_mm[1] / 2))
         slab_vox = max(1, slab_vox)
         
-        mip = _compute_mip_slab(self.volume, y_center, slab_vox, axis=1)  # (Z, X)
+        # Check if we can use cached MIP
+        mip = None
+        if (self._cached_coronal_mip is not None and
+            self._cached_coronal_mip[0] == y_center and
+            self._cached_coronal_mip[1] == slab_vox):
+            mip = self._cached_coronal_mip[2]
+        else:
+            mip = _compute_mip_slab(self.volume, y_center, slab_vox, axis=1)  # (Z, X)
+            self._cached_coronal_mip = (y_center, slab_vox, mip)
         
         # Normalize for display
         lo, hi = self._clim()
@@ -538,173 +556,278 @@ class SeedEditor:
         
         # Display with origin='upper' and flip Z so superior at top
         mip_display = np.flipud(mip_norm)
-        self._coronal_im = self.ax_coronal.imshow(
-            mip_display,
-            aspect='auto',
-            origin='upper',
-            cmap='gray',
-            vmin=0, vmax=1,
-        )
         
-        # Draw splines for all vessels
+        # First call: create artists
+        if self._coronal_im is None:
+            self._coronal_im = self.ax_coronal.imshow(
+                mip_display,
+                aspect='auto',
+                origin='upper',
+                cmap='gray',
+                vmin=0, vmax=1,
+            )
+            
+            # Create spline lines and scatter plots for each vessel
+            for vessel_name in VESSEL_KEYS:
+                vc = VESSEL_COLORS[vessel_name]
+                # Spline line
+                self._coronal_spline_lines[vessel_name], = self.ax_coronal.plot(
+                    [], [], color=vc, linewidth=1.5, alpha=0.8,
+                )
+                # Ostium scatter
+                self._coronal_seed_scatters[vessel_name]["ostium"] = self.ax_coronal.scatter(
+                    [], [], c=vc, s=80, marker='s',
+                    edgecolors='white', linewidths=1.5,
+                    alpha=1.0, zorder=5,
+                )
+                # Waypoints scatter
+                self._coronal_seed_scatters[vessel_name]["waypoints"] = self.ax_coronal.scatter(
+                    [], [], c=vc, s=40, marker='o',
+                    edgecolors='white', linewidths=0.8,
+                    alpha=1.0, zorder=4,
+                )
+        else:
+            # Update existing artists
+            self._coronal_im.set_data(mip_display)
+            self._coronal_im.set_clim(0, 1)
+        
+        # Update splines for all vessels (with slab filtering)
         for vessel_name in VESSEL_KEYS:
             cl = self.centerlines[vessel_name]
+            alpha = 0.8 if vessel_name == v else 0.3
+            
             if cl is not None and len(cl) > 1:
-                vc = VESSEL_COLORS[vessel_name]
-                alpha = 0.8 if vessel_name == v else 0.3
+                # Filter by Y-proximity: abs(cl[:, 1] - y_center) <= slab_vox
+                # Insert NaN at breaks for disjoint segments
+                x_coords = cl[:, 2].astype(np.float64)
+                z_coords_flipped = (self.volume_shape[0] - 1 - cl[:, 0]).astype(np.float64)
                 
-                # Coronal view: X vs Z (flipped)
-                # Display coordinates: x = x, y = shape[0] - 1 - z
-                x_coords = cl[:, 2]
-                z_coords_flipped = self.volume_shape[0] - 1 - cl[:, 0]
+                # Create mask for points within slab
+                in_slab = np.abs(cl[:, 1] - y_center) <= slab_vox
                 
-                self.ax_coronal.plot(
-                    x_coords, z_coords_flipped,
-                    color=vc, linewidth=1.5, alpha=alpha,
-                )
+                # Set coords to NaN where not in slab (breaks the line)
+                x_filtered = x_coords.copy()
+                z_filtered = z_coords_flipped.copy()
+                x_filtered[~in_slab] = np.nan
+                z_filtered[~in_slab] = np.nan
+                
+                self._coronal_spline_lines[vessel_name].set_data(x_filtered, z_filtered)
+                self._coronal_spline_lines[vessel_name].set_alpha(alpha)
+            else:
+                # No centerline: clear the line
+                self._coronal_spline_lines[vessel_name].set_data([], [])
         
-        # Draw seeds for all vessels
+        # Update seeds for all vessels
         for vessel_name in VESSEL_KEYS:
             sd = self.seeds[vessel_name]
-            vc = VESSEL_COLORS[vessel_name]
             is_active = vessel_name == v
             alpha = 1.0 if is_active else 0.3
             
             # Ostium
             if sd["ostium"] is not None:
                 oz, oy, ox = sd["ostium"]
-                # Check if within slab
-                if abs(oy - y_center) <= slab_vox * 2:
+                # Check if within slab (tightened to slab_vox)
+                if abs(oy - y_center) <= slab_vox:
                     flipped_z = self.volume_shape[0] - 1 - oz
-                    self.ax_coronal.scatter(
-                        [ox], [flipped_z],
-                        c=vc, s=80, marker='s',
-                        edgecolors='white', linewidths=1.5,
-                        alpha=alpha, zorder=5,
+                    self._coronal_seed_scatters[vessel_name]["ostium"].set_offsets(
+                        np.array([[ox, flipped_z]], dtype=np.float64)
                     )
+                else:
+                    self._coronal_seed_scatters[vessel_name]["ostium"].set_offsets(
+                        np.empty((0, 2), dtype=np.float64)
+                    )
+            else:
+                self._coronal_seed_scatters[vessel_name]["ostium"].set_offsets(
+                    np.empty((0, 2), dtype=np.float64)
+                )
             
             # Waypoints
-            waypoint_x = []
-            waypoint_z = []
+            waypoint_coords = []
             for wp in sd["waypoints"]:
                 wz, wy, wx = wp
-                if abs(wy - y_center) <= slab_vox * 2:
-                    waypoint_x.append(wx)
-                    waypoint_z.append(self.volume_shape[0] - 1 - wz)
+                if abs(wy - y_center) <= slab_vox:
+                    waypoint_coords.append([wx, self.volume_shape[0] - 1 - wz])
             
-            if waypoint_x:
-                self.ax_coronal.scatter(
-                    waypoint_x, waypoint_z,
-                    c=vc, s=40, marker='o',
-                    edgecolors='white', linewidths=0.8,
-                    alpha=alpha, zorder=4,
+            if waypoint_coords:
+                self._coronal_seed_scatters[vessel_name]["waypoints"].set_offsets(
+                    np.array(waypoint_coords, dtype=np.float64)
                 )
+            else:
+                self._coronal_seed_scatters[vessel_name]["waypoints"].set_offsets(
+                    np.empty((0, 2), dtype=np.float64)
+                )
+            
+            # Update alpha for both scatter plots
+            self._coronal_seed_scatters[vessel_name]["ostium"].set_alpha(alpha)
+            self._coronal_seed_scatters[vessel_name]["waypoints"].set_alpha(alpha)
         
         self.ax_coronal.set_title(
             f"Coronal MIP (Y={y_center}, slab={self.slab_mm:.0f}mm)",
             fontsize=10
         )
-        self.ax_coronal.tick_params(labelsize=8)
     
     def _draw_axial_mip(self) -> None:
         """Draw axial MIP with seeds and spline overlay."""
-        self.ax_axial.cla()
-        
         v = self.current_vessel
-        color = VESSEL_COLORS[v]
+
         
         # Compute MIP (project Z axis)
         z_center = self.z_center[v]
         slab_vox = int(np.round(self.slab_mm / self.spacing_mm[0] / 2))
         slab_vox = max(1, slab_vox)
         
-        mip = _compute_mip_slab(self.volume, z_center, slab_vox, axis=0)  # (Y, X)
+        # Check if we can use cached MIP
+        mip = None
+        if (self._cached_axial_mip is not None and
+            self._cached_axial_mip[0] == z_center and
+            self._cached_axial_mip[1] == slab_vox):
+            mip = self._cached_axial_mip[2]
+        else:
+            mip = _compute_mip_slab(self.volume, z_center, slab_vox, axis=0)  # (Y, X)
+            self._cached_axial_mip = (z_center, slab_vox, mip)
         
         # Normalize for display
         lo, hi = self._clim()
         mip_norm = np.clip(mip, lo, hi)
         mip_norm = (mip_norm - lo) / (hi - lo)
         
-        self._axial_im = self.ax_axial.imshow(
-            mip_norm,
-            aspect='auto',
-            origin='upper',
-            cmap='gray',
-            vmin=0, vmax=1,
-        )
+        # First call: create artists
+        if self._axial_im is None:
+            self._axial_im = self.ax_axial.imshow(
+                mip_norm,
+                aspect='auto',
+                origin='upper',
+                cmap='gray',
+                vmin=0, vmax=1,
+            )
+            
+            # Create spline lines and scatter plots for each vessel
+            for vessel_name in VESSEL_KEYS:
+                vc = VESSEL_COLORS[vessel_name]
+                # Spline line
+                self._axial_spline_lines[vessel_name], = self.ax_axial.plot(
+                    [], [], color=vc, linewidth=1.5, alpha=0.8,
+                )
+                # Ostium scatter
+                self._axial_seed_scatters[vessel_name]["ostium"] = self.ax_axial.scatter(
+                    [], [], c=vc, s=80, marker='s',
+                    edgecolors='white', linewidths=1.5,
+                    alpha=1.0, zorder=5,
+                )
+                # Waypoints scatter
+                self._axial_seed_scatters[vessel_name]["waypoints"] = self.ax_axial.scatter(
+                    [], [], c=vc, s=40, marker='o',
+                    edgecolors='white', linewidths=0.8,
+                    alpha=1.0, zorder=4,
+                )
+        else:
+            # Update existing artists
+            self._axial_im.set_data(mip_norm)
+            self._axial_im.set_clim(0, 1)
         
-        # Draw splines for all vessels
+        # Update splines for all vessels (with slab filtering)
         for vessel_name in VESSEL_KEYS:
             cl = self.centerlines[vessel_name]
+            alpha = 0.8 if vessel_name == v else 0.3
+            
             if cl is not None and len(cl) > 1:
-                vc = VESSEL_COLORS[vessel_name]
-                alpha = 0.8 if vessel_name == v else 0.3
+                # Filter by Z-proximity: abs(cl[:, 0] - z_center) <= slab_vox
+                # Insert NaN at breaks for disjoint segments
+                x_coords = cl[:, 2].astype(np.float64)
+                y_coords = cl[:, 1].astype(np.float64)
                 
-                # Axial view: X vs Y
-                x_coords = cl[:, 2]
-                y_coords = cl[:, 1]
+                # Create mask for points within slab
+                in_slab = np.abs(cl[:, 0] - z_center) <= slab_vox
                 
-                self.ax_axial.plot(
-                    x_coords, y_coords,
-                    color=vc, linewidth=1.5, alpha=alpha,
-                )
+                # Set coords to NaN where not in slab (breaks the line)
+                x_filtered = x_coords.copy()
+                y_filtered = y_coords.copy()
+                x_filtered[~in_slab] = np.nan
+                y_filtered[~in_slab] = np.nan
+                
+                self._axial_spline_lines[vessel_name].set_data(x_filtered, y_filtered)
+                self._axial_spline_lines[vessel_name].set_alpha(alpha)
+            else:
+                # No centerline: clear the line
+                self._axial_spline_lines[vessel_name].set_data([], [])
         
-        # Draw seeds for all vessels
+        # Update seeds for all vessels
         for vessel_name in VESSEL_KEYS:
             sd = self.seeds[vessel_name]
-            vc = VESSEL_COLORS[vessel_name]
             is_active = vessel_name == v
             alpha = 1.0 if is_active else 0.3
             
             # Ostium
             if sd["ostium"] is not None:
                 oz, oy, ox = sd["ostium"]
-                if abs(oz - z_center) <= slab_vox * 2:
-                    self.ax_axial.scatter(
-                        [ox], [oy],
-                        c=vc, s=80, marker='s',
-                        edgecolors='white', linewidths=1.5,
-                        alpha=alpha, zorder=5,
+                # Check if within slab (tightened to slab_vox)
+                if abs(oz - z_center) <= slab_vox:
+                    self._axial_seed_scatters[vessel_name]["ostium"].set_offsets(
+                        np.array([[ox, oy]], dtype=np.float64)
                     )
+                else:
+                    self._axial_seed_scatters[vessel_name]["ostium"].set_offsets(
+                        np.empty((0, 2), dtype=np.float64)
+                    )
+            else:
+                self._axial_seed_scatters[vessel_name]["ostium"].set_offsets(
+                    np.empty((0, 2), dtype=np.float64)
+                )
             
             # Waypoints
-            waypoint_x = []
-            waypoint_y = []
+            waypoint_coords = []
             for wp in sd["waypoints"]:
                 wz, wy, wx = wp
-                if abs(wz - z_center) <= slab_vox * 2:
-                    waypoint_x.append(wx)
-                    waypoint_y.append(wy)
+                if abs(wz - z_center) <= slab_vox:
+                    waypoint_coords.append([wx, wy])
             
-            if waypoint_x:
-                self.ax_axial.scatter(
-                    waypoint_x, waypoint_y,
-                    c=vc, s=40, marker='o',
-                    edgecolors='white', linewidths=0.8,
-                    alpha=alpha, zorder=4,
+            if waypoint_coords:
+                self._axial_seed_scatters[vessel_name]["waypoints"].set_offsets(
+                    np.array(waypoint_coords, dtype=np.float64)
                 )
+            else:
+                self._axial_seed_scatters[vessel_name]["waypoints"].set_offsets(
+                    np.empty((0, 2), dtype=np.float64)
+                )
+            
+            # Update alpha for both scatter plots
+            self._axial_seed_scatters[vessel_name]["ostium"].set_alpha(alpha)
+            self._axial_seed_scatters[vessel_name]["waypoints"].set_alpha(alpha)
         
         self.ax_axial.set_title(
             f"Axial MIP (Z={z_center}, slab={self.slab_mm:.0f}mm)",
             fontsize=10
         )
-        self.ax_axial.tick_params(labelsize=8)
     
     def _draw_cpr(self) -> None:
         """Draw CPR panel."""
-        self.ax_cpr.cla()
-        
         v = self.current_vessel
         cl = self.centerlines[v]
         
-        if cl is None or len(cl) < 3:
-            self.ax_cpr.text(
+        # First call: create text artists
+        if self._cpr_text_no_seeds is None:
+            self._cpr_text_no_seeds = self.ax_cpr.text(
                 0.5, 0.5,
                 "Place ≥3 seeds to see CPR",
                 ha='center', va='center',
                 transform=self.ax_cpr.transAxes,
                 fontsize=12, color='gray',
             )
+            self._cpr_text_failed = self.ax_cpr.text(
+                0.5, 0.5,
+                "CPR computation failed",
+                ha='center', va='center',
+                transform=self.ax_cpr.transAxes,
+                fontsize=12, color='red',
+            )
+        
+        # Check if we have enough seeds
+        if cl is None or len(cl) < 3:
+            # Show "no seeds" text, hide failed text and image
+            self._cpr_text_no_seeds.set_visible(True)
+            self._cpr_text_failed.set_visible(False)
+            if self._cpr_im is not None:
+                self._cpr_im.set_visible(False)
             self.ax_cpr.set_title(f"CPR — {v}", fontsize=10)
             return
         
@@ -718,13 +841,11 @@ class SeedEditor:
         print(f"[seed_editor] CPR: {dt*1000:.0f}ms")
         
         if cpr_img is None:
-            self.ax_cpr.text(
-                0.5, 0.5,
-                "CPR computation failed",
-                ha='center', va='center',
-                transform=self.ax_cpr.transAxes,
-                fontsize=12, color='red',
-            )
+            # Show "failed" text, hide no seeds text and image
+            self._cpr_text_no_seeds.set_visible(False)
+            self._cpr_text_failed.set_visible(True)
+            if self._cpr_im is not None:
+                self._cpr_im.set_visible(False)
             return
         
         # Normalize
@@ -733,24 +854,31 @@ class SeedEditor:
         cpr_norm = (cpr_norm - lo) / (hi - lo)
         cpr_norm = np.nan_to_num(cpr_norm, nan=0.5)
         
-        # Display: transpose so cols=arc-length, rows=lateral
-        self._cpr_im = self.ax_cpr.imshow(
-            cpr_norm.T,
-            aspect='auto',
-            origin='upper',
-            cmap='gray',
-            vmin=0, vmax=1,
-            interpolation='bilinear',
-        )
+        # Hide text, show image
+        self._cpr_text_no_seeds.set_visible(False)
+        self._cpr_text_failed.set_visible(False)
+        
+        # First call: create image artist
+        if self._cpr_im is None:
+            # Display: transpose so cols=arc-length, rows=lateral
+            self._cpr_im = self.ax_cpr.imshow(
+                cpr_norm.T,
+                aspect='auto',
+                origin='upper',
+                cmap='gray',
+                vmin=0, vmax=1,
+                interpolation='bilinear',
+            )
+        else:
+            # Update existing image
+            self._cpr_im.set_data(cpr_norm.T)
+            self._cpr_im.set_clim(0, 1)
+            self._cpr_im.set_visible(True)
         
         self.ax_cpr.set_title(f"CPR — {v}", fontsize=10)
-        self.ax_cpr.tick_params(labelsize=8)
     
     def _update_status_bar(self) -> None:
         """Update status bar with current state."""
-        self.ax_status.cla()
-        self.ax_status.axis("off")
-        
         v = self.current_vessel
         sd = self.seeds[v]
         color = VESSEL_COLORS[v]
@@ -759,36 +887,59 @@ class SeedEditor:
         has_ostium = sd["ostium"] is not None
         n_seeds = n_waypoints + (1 if has_ostium else 0)
         
-        # Vessel buttons
-        button_x = 0.02
-        for i, vn in enumerate(VESSEL_KEYS):
-            vc = VESSEL_COLORS[vn]
-            is_current = vn == v
-            weight = "bold" if is_current else "normal"
-            alpha = 1.0 if is_current else 0.5
-            self.ax_status.text(
-                button_x + i * 0.08, 0.5,
-                f"[{i+1}] {vn}",
+        # First call: create text artists
+        if not self._status_vessel_texts:
+            self.ax_status.axis("off")
+            button_x = 0.02
+            for i, vn in enumerate(VESSEL_KEYS):
+                vc = VESSEL_COLORS[vn]
+                is_current = vn == v
+                weight = "bold" if is_current else "normal"
+                alpha = 1.0 if is_current else 0.5
+                txt = self.ax_status.text(
+                    button_x + i * 0.08, 0.5,
+                    f"[{i+1}] {vn}",
+                    ha='left', va='center',
+                    transform=self.ax_status.transAxes,
+                    fontsize=9, fontweight=weight, color=vc, alpha=alpha,
+                )
+                self._status_vessel_texts.append(txt)
+            
+            msg = (
+                f"  |  Vessel: {v}  |  "
+                f"Ostium: {'SET' if has_ostium else 'NOT SET'}  |  "
+                f"Waypoints: {n_waypoints}  |  "
+                f"Total seeds: {n_seeds}  |  "
+                f"Slab: {self.slab_mm:.0f}mm  |  "
+                f"W/L: {WW}/{WL}"
+            )
+            self._status_info_text = self.ax_status.text(
+                0.30, 0.5, msg,
                 ha='left', va='center',
                 transform=self.ax_status.transAxes,
-                fontsize=9, fontweight=weight, color=vc, alpha=alpha,
+                fontsize=9, color=color,
             )
-        
-        # Status text
-        msg = (
-            f"  |  Vessel: {v}  |  "
-            f"Ostium: {'SET' if has_ostium else 'NOT SET'}  |  "
-            f"Waypoints: {n_waypoints}  |  "
-            f"Total seeds: {n_seeds}  |  "
-            f"Slab: {self.slab_mm:.0f}mm  |  "
-            f"W/L: {WW}/{WL}"
-        )
-        self.ax_status.text(
-            0.30, 0.5, msg,
-            ha='left', va='center',
-            transform=self.ax_status.transAxes,
-            fontsize=9, color=color,
-        )
+        else:
+            # Update existing text artists
+            for i, vn in enumerate(VESSEL_KEYS):
+                is_current = vn == v
+                self._status_vessel_texts[i].set_fontweight(
+                    "bold" if is_current else "normal"
+                )
+                self._status_vessel_texts[i].set_alpha(
+                    1.0 if is_current else 0.5
+                )
+            
+            msg = (
+                f"  |  Vessel: {v}  |  "
+                f"Ostium: {'SET' if has_ostium else 'NOT SET'}  |  "
+                f"Waypoints: {n_waypoints}  |  "
+                f"Total seeds: {n_seeds}  |  "
+                f"Slab: {self.slab_mm:.0f}mm  |  "
+                f"W/L: {WW}/{WL}"
+            )
+            self._status_info_text.set_text(msg)
+            self._status_info_text.set_color(color)
     
     # ─────────────────────────────────────────────────────────────────────────
     # Seed Finding

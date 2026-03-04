@@ -1039,10 +1039,12 @@ class SeedEditor:
         y: int,
         x: int,
         vessel: Optional[str] = None,
+        view: Optional[str] = None,
     ) -> Optional[Tuple[str, str, List[int]]]:
         """
         Find the nearest seed to the given coordinates.
-        
+        When view is set, uses only the two visible screen axes for
+        distance so any seed visible in the slab is selectable.
         Returns (vessel, seed_type, position) or None if too far.
         seed_type is "ostium" or "waypoint_N"
         """
@@ -1055,7 +1057,12 @@ class SeedEditor:
         # Check ostium
         if self.seeds[vessel]["ostium"] is not None:
             oz, oy, ox = self.seeds[vessel]["ostium"]
-            dist = (oz - z) ** 2 + (oy - y) ** 2 + (ox - x) ** 2
+            if view == 'coronal':
+                dist = (oz - z) ** 2 + (ox - x) ** 2
+            elif view == 'axial':
+                dist = (oy - y) ** 2 + (ox - x) ** 2
+            else:
+                dist = (oz - z) ** 2 + (oy - y) ** 2 + (ox - x) ** 2
             if dist < min_dist:
                 min_dist = dist
                 nearest = (vessel, "ostium", self.seeds[vessel]["ostium"])
@@ -1063,7 +1070,12 @@ class SeedEditor:
         # Check waypoints
         for i, wp in enumerate(self.seeds[vessel]["waypoints"]):
             wz, wy, wx = wp
-            dist = (wz - z) ** 2 + (wy - y) ** 2 + (wx - x) ** 2
+            if view == 'coronal':
+                dist = (wz - z) ** 2 + (wx - x) ** 2
+            elif view == 'axial':
+                dist = (wy - y) ** 2 + (wx - x) ** 2
+            else:
+                dist = (wz - z) ** 2 + (wy - y) ** 2 + (wx - x) ** 2
             if dist < min_dist:
                 min_dist = dist
                 nearest = (vessel, f"waypoint_{i}", wp)
@@ -1080,6 +1092,7 @@ class SeedEditor:
         y: int,
         x: int,
         vessel: Optional[str] = None,
+        view: Optional[str] = None,
     ) -> bool:
         """Delete the nearest waypoint to the given coordinates."""
         if vessel is None:
@@ -1091,7 +1104,12 @@ class SeedEditor:
         # Check waypoints only (not ostium)
         for i, wp in enumerate(self.seeds[vessel]["waypoints"]):
             wz, wy, wx = wp
-            dist = (wz - z) ** 2 + (wy - y) ** 2 + (wx - x) ** 2
+            if view == 'coronal':
+                dist = (wz - z) ** 2 + (wx - x) ** 2
+            elif view == 'axial':
+                dist = (wy - y) ** 2 + (wx - x) ** 2
+            else:
+                dist = (wz - z) ** 2 + (wy - y) ** 2 + (wx - x) ** 2
             if dist < min_dist:
                 min_dist = dist
                 nearest_idx = i
@@ -1122,9 +1140,11 @@ class SeedEditor:
         
         # Determine (z, y, x) seed position based on which view
         if ax == self.ax_coronal:
+            view = 'coronal'
             actual_z = self.volume_shape[0] - 1 - iy
             z, y, x = actual_z, self.y_center[self.current_vessel], ix
         else:  # axial
+            view = 'axial'
             z, y, x = self.z_center[self.current_vessel], iy, ix
         
         # Clamp to volume
@@ -1136,7 +1156,7 @@ class SeedEditor:
         
         # Left click: select or drag
         if event.button == 1:
-            nearest = self._find_nearest_seed(z, y, x, v)
+            nearest = self._find_nearest_seed(z, y, x, v, view=view)
             if nearest:
                 vessel, seed_type, pos = nearest
                 clicked_idx = self._get_seed_index_from_type(vessel, seed_type)
@@ -1159,7 +1179,7 @@ class SeedEditor:
         
         # Right click — delete nearest waypoint (unchanged)
         elif event.button == 3:
-            if self._delete_nearest_waypoint(z, y, x, v):
+            if self._delete_nearest_waypoint(z, y, x, v, view=view):
                 # Adjust selection index after deletion
                 all_seeds = self._get_all_seeds_for_vessel(v)
                 if self._selected_idx is not None:

@@ -210,6 +210,8 @@ def _fit_spline_centerline(
     dense_ijk = dense_mm / np.array(spacing_mm)
     dense_ijk = np.clip(dense_ijk, 0, np.array(volume_shape) - 1)
 
+    return dense_ijk
+
 
 def _compute_cpr_from_centerline(
     volume: np.ndarray,

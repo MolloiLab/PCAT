@@ -77,7 +77,7 @@ from pipeline.dicom_loader import load_dicom_series
 from pipeline.visualize import (
     _bezier_fit_centerline,
     _sample_bezier_frame,
-    _build_cpr_image,
+    _build_cpr_image_fast,
 )
 
 
@@ -168,7 +168,7 @@ def _fit_spline_centerline(
     
     Returns
     -------
-    dense_ijk : (M, 3) int array, or None if insufficient points
+    dense_ijk : (M, 3) float64 array, or None if insufficient points
     """
     if len(seeds_ijk) < 2:
         return None
@@ -205,11 +205,10 @@ def _fit_spline_centerline(
     s_vals = np.linspace(0, total, n_out)
     dense_mm = cs(s_vals)
     
-    # Convert back to voxel indices and clip to volume
-    dense_ijk = np.round(dense_mm / np.array(spacing_mm)).astype(int)
+    # Convert back to voxel coordinates (float — no rounding, avoids
+    # staircase artifacts in downstream CPR tangent computation)
+    dense_ijk = dense_mm / np.array(spacing_mm)
     dense_ijk = np.clip(dense_ijk, 0, np.array(volume_shape) - 1)
-    
-    return dense_ijk
 
 
 def _compute_cpr_from_centerline(
@@ -220,7 +219,7 @@ def _compute_cpr_from_centerline(
     row_extent_mm: float = 15.0,
 ) -> Optional[np.ndarray]:
     """
-    Compute CPR image from dense centerline using cubic interpolation.
+    Compute CPR image from dense centerline using fast trilinear interpolation.
     
     Parameters
     ----------
@@ -249,7 +248,7 @@ def _compute_cpr_from_centerline(
         cs, total_len, n_pixels
     )
     
-    cpr_img = _build_cpr_image(
+    cpr_img = _build_cpr_image_fast(
         volume, vox_size, positions, normals, binormals,
         n_rows=n_pixels, row_extent_mm=row_extent_mm, slab_mm=0.0
     )

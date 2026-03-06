@@ -227,9 +227,9 @@ The landmark study that introduced FAI, providing histological validation that P
 - Reproducibility: ICC = 0.987 intraobserver, 0.980 interobserver
 - Defined the exact technical parameters (−190 to −30 HU fat window, proximal 40 mm VOI, 1× vessel diameter radial extent)
 
-#### ORFAN 2023 & Extended 2024 (AI-Enhanced FAI at Scale)
+#### ORFAN 2019 & Extended 2024 (AI-Enhanced FAI at Scale)
 
-> Oikonomou EK et al. *Nature Cardiovascular Research* 2023. n=3,324.
+> Oikonomou EK et al. *Eur Heart J.* 2019. n=3,324.
 > Chan K et al. *Lancet* 2024. n=40,091.
 
 The largest PCAT/FAI study to date — n=**40,091** consecutive CCTA patients from **8 UK NHS hospitals**, with two nested cohorts:
@@ -1043,7 +1043,8 @@ Our approach directly addresses each of the four paradoxes identified in Part VI
 5. Nidorf SM et al. "Colchicine in patients with chronic coronary disease (LoDoCo2)." *NEJM* 2020;383:1838–1847. [DOI](https://doi.org/10.1056/NEJMoa2021372)
 6. Antonopoulos AS et al. "Detecting human coronary inflammation by imaging perivascular fat." *Sci Transl Med* 2017;9:eaal2658. [DOI](https://doi.org/10.1126/scitranslmed.aal2658)
 7. Oikonomou EK et al. "Non-invasive detection of coronary inflammation using CT and prediction of residual cardiovascular risk (CRISP-CT)." *Lancet* 2018;392:929–939. [DOI](https://doi.org/10.1016/S0140-6736(18)31114-0)
-8. Oikonomou EK et al. "A novel machine learning-derived radiotranscriptomic map of perivascular biology (ORFAN)." *Nat Cardiovasc Res* 2023. [DOI](https://doi.org/10.1093/eurheartj/ehz592) 
+8. Oikonomou EK et al. "A novel machine learning-derived radiotranscriptomic map of perivascular biology." *Eur Heart J
+.* 2019. [DOI](https://doi.org/10.1093/eurheartj/ehz592) 
 9. Chan K, Wahome SKW, Antoniades C et al. "Inflammatory risk and cardiovascular events in patients without obstructive coronary artery disease (ORFAN extended)." *Lancet* 2024. [DOI](https://doi.org/10.1016/S0140-6736(24)01811-9)
 10. Fiolet ATL et al. "Effect of low-dose colchicine on pericoronary inflammation and coronary plaque composition (LoDoCo2 CT substudy)." *Heart* 2025. [DOI](https://doi.org/10.1136/heartjnl-2024-325527)
 11. Ma R et al. "Towards reference values of pericoronary adipose tissue attenuation." *Eur Radiol* 2020. [DOI](https://doi.org/10.1007/s00330-020-07069-0)

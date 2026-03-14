@@ -2,7 +2,7 @@
 
 from PySide6.QtWidgets import (
     QMainWindow, QDockWidget, QWidget, QVBoxLayout,
-    QStatusBar, QMessageBox,
+    QStatusBar, QMessageBox, QProgressDialog,
     QStackedWidget, QSplitter,
 )
 from PySide6.QtCore import Qt, Slot
@@ -186,9 +186,19 @@ class MainWindow(QMainWindow):
         self._dicom_browser._import_btn.setEnabled(False)
         self.statusBar().showMessage(f"Loading DICOM from {dicom_dir}...")
 
+        # Progress dialog
+        self._load_progress = QProgressDialog(
+            "Reading DICOM files...", None, 0, 100, self
+        )
+        self._load_progress.setWindowTitle("Loading DICOM")
+        self._load_progress.setMinimumDuration(0)
+        self._load_progress.setWindowModality(Qt.WindowModal)
+        self._load_progress.setValue(0)
+
         # Launch background loader
         self._loader_worker = DicomLoaderWorker(dicom_path, self._session, parent=self)
         self._loader_worker.progress.connect(self._on_loader_progress)
+        self._loader_worker.progress_pct.connect(self._on_loader_pct)
         self._loader_worker.finished.connect(
             lambda vol, meta: self._on_loader_finished(vol, meta, dicom_path, session_dir)
         )
@@ -198,9 +208,22 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_loader_progress(self, message: str) -> None:
         self.statusBar().showMessage(message)
+        if hasattr(self, "_load_progress") and self._load_progress is not None:
+            self._load_progress.setLabelText(message)
+
+    @Slot(int, int)
+    def _on_loader_pct(self, current: int, total: int) -> None:
+        if hasattr(self, "_load_progress") and self._load_progress is not None:
+            self._load_progress.setMaximum(total)
+            self._load_progress.setValue(current)
 
     def _on_loader_finished(self, volume, meta, dicom_path: Path, session_dir: Path) -> None:
         """Handle successful DICOM load from background thread."""
+        # Close progress dialog
+        if hasattr(self, "_load_progress") and self._load_progress is not None:
+            self._load_progress.close()
+            self._load_progress = None
+
         # Re-enable import
         self._dicom_browser._import_btn.setEnabled(True)
 
@@ -259,6 +282,9 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_loader_failed(self, error: str) -> None:
         """Handle DICOM load failure from background thread."""
+        if hasattr(self, "_load_progress") and self._load_progress is not None:
+            self._load_progress.close()
+            self._load_progress = None
         self._dicom_browser._import_btn.setEnabled(True)
         QMessageBox.critical(self, "DICOM Load Error", error)
         self.statusBar().showMessage("DICOM load failed")

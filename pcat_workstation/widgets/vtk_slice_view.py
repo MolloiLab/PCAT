@@ -242,9 +242,11 @@ class VTKSliceView(QWidget):
         vtk_image.SetSpacing(spacing[2], spacing[1], spacing[0])  # sx, sy, sz
         vtk_image.SetOrigin(0.0, 0.0, 0.0)
 
-        # Flatten in C order (row-major), which maps to VTK's expected x-fastest order
-        flat = np.ascontiguousarray(volume, dtype=np.float32).ravel()
-        vtk_arr = numpy_to_vtk(flat, deep=True, array_type=10)  # VTK_FLOAT = 10
+        # Flatten in C order (row-major), which maps to VTK's expected x-fastest order.
+        # deep=False avoids a 400MB copy; the numpy array is kept alive via
+        # self._volume so VTK's pointer stays valid.
+        self._vtk_flat = np.ascontiguousarray(volume, dtype=np.float32).ravel()
+        vtk_arr = numpy_to_vtk(self._vtk_flat, deep=False, array_type=10)  # VTK_FLOAT = 10
         vtk_arr.SetNumberOfComponents(1)
         vtk_image.GetPointData().SetScalars(vtk_arr)
 

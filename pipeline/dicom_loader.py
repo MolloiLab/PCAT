@@ -10,14 +10,18 @@ Handles Siemens syngo.via exports:
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from typing import Tuple, Dict, Any
+from typing import Callable, Optional, Tuple, Dict, Any
 
 import numpy as np
 import pydicom
 
 
-def load_dicom_series(dicom_dir: str | Path) -> Tuple[np.ndarray, Dict[str, Any]]:
+def load_dicom_series(
+    dicom_dir: str | Path,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
     """
     Load all .dcm files in dicom_dir, sort by ImagePositionPatient Z,
     apply RescaleSlope/Intercept to get Hounsfield Units.
@@ -39,10 +43,14 @@ def load_dicom_series(dicom_dir: str | Path) -> Tuple[np.ndarray, Dict[str, Any]
         raise FileNotFoundError(f"No .dcm files found in {dicom_dir}")
 
     # Read all slices (headers only first for sorting)
+    total = len(dcm_files)
     slices = []
-    for f in dcm_files:
+    for i, f in enumerate(dcm_files):
         ds = pydicom.dcmread(str(f))
         slices.append(ds)
+        if progress_callback and i % 20 == 0:
+            progress_callback(i, total, f"Reading DICOM: {i}/{total}")
+            time.sleep(0)  # yield GIL for UI responsiveness
 
     # Sort by Z position
     def _z(ds):
@@ -89,15 +97,19 @@ def load_dicom_series(dicom_dir: str | Path) -> Tuple[np.ndarray, Dict[str, Any]
     HU_AIR       = -1024.0
     HU_MAX_VALID =  3095.0
     # Build 3D array
-    volume = np.zeros((len(slices), rows, cols), dtype=np.float32)
+    n_slices = len(slices)
+    volume = np.zeros((n_slices, rows, cols), dtype=np.float32)
     for i, ds in enumerate(slices):
         raw = ds.pixel_array.astype(np.float32)
         hu  = raw * rescale_slope + rescale_intercept
         # Replace FOV-fill sentinel with air
         hu[hu <= SENTINEL_HU + 1] = HU_AIR
         # Clip implausibly high values (metal artefact limit)
-        hu = np.clip(hu, HU_AIR, HU_MAX_VALID)
+        np.clip(hu, HU_AIR, HU_MAX_VALID, out=hu)
         volume[i] = hu
+        if progress_callback and i % 20 == 0:
+            progress_callback(i, n_slices, f"Building volume: {i}/{n_slices}")
+            time.sleep(0)
 
     meta = {
         "patient_dir": str(dicom_dir),

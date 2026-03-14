@@ -169,6 +169,9 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_dicom_imported(self, dicom_dir: str) -> None:
         """Handle a new DICOM folder import."""
+        if self._loader_worker is not None and self._loader_worker.isRunning():
+            return
+
         dicom_path = Path(dicom_dir)
 
         # Check if we already have a session for this DICOM dir

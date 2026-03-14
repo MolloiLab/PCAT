@@ -114,6 +114,8 @@ def load_dicom_series(dicom_dir: str | Path) -> Tuple[np.ndarray, Dict[str, Any]
         "rescale_slope": rescale_slope,
         "z_positions": z_positions,
         "shape": list(volume.shape),  # (Z, Y, X)
+        "study_date": str(getattr(ref, "StudyDate", "")),
+        "kVp": float(getattr(ref, "KVP", 0.0)),
     }
 
     return volume, meta

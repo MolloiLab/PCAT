@@ -12,10 +12,8 @@ from vtkmodules.vtkRenderingCore import (
     vtkImageSliceMapper,
     vtkImageProperty,
 )
-from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
+from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkCellArray
-from vtkmodules.vtkFiltersSources import vtkSphereSource
-from vtkmodules.vtkFiltersCore import vtkGlyph3D
 from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 from vtk.util.numpy_support import numpy_to_vtk
 from typing import Optional
@@ -498,49 +496,61 @@ class VTKSliceView(QWidget):
         self._render()
 
     def set_seed_overlay(self, seeds_dict: dict, spacing: list) -> None:
-        """Show seed/ostium points as colored spheres with white edge halo.
+        """Show seed/ostium points as flat crosshair markers.
 
-        Horos style: filled vessel-colored sphere + slightly larger white
-        wireframe sphere behind it for contrast (like white edgecolors).
+        Each seed renders as a vessel-colored + with a white outline +,
+        flat on the slice plane — no 3D spheres.
         """
         sx, sy, sz = spacing[2], spacing[1], spacing[0]
+        arm = 3.0  # crosshair arm length in mm
 
         for vessel, ijk in seeds_dict.items():
             z, y, x = float(ijk[0]), float(ijk[1]), float(ijk[2])
-            pos = (x * sx, y * sy, z * sz)
+            cx, cy, cz = x * sx, y * sy, z * sz
             rgb = _VESSEL_COLORS_RGB.get(vessel, (232, 83, 58))
 
-            # White outline sphere (slightly larger, behind)
-            sphere_out = vtkSphereSource()
-            sphere_out.SetCenter(*pos)
-            sphere_out.SetRadius(2.2)
-            sphere_out.SetPhiResolution(16)
-            sphere_out.SetThetaResolution(16)
-            mapper_out = vtkPolyDataMapper()
-            mapper_out.SetInputConnection(sphere_out.GetOutputPort())
-            actor_out = vtkActor()
-            actor_out.SetMapper(mapper_out)
-            actor_out.GetProperty().SetColor(1.0, 1.0, 1.0)
-            actor_out.GetProperty().SetOpacity(0.9)
-            actor_out.GetProperty().SetRepresentationToWireframe()
-            actor_out.GetProperty().SetLineWidth(1.5)
-            self._vtk_renderer.AddActor(actor_out)
-            self._overlay_actors.append(actor_out)
+            # Build a crosshair (two perpendicular line segments)
+            points = vtkPoints()
+            lines = vtkCellArray()
+            # Horizontal arm
+            points.InsertNextPoint(cx - arm, cy, cz)
+            points.InsertNextPoint(cx + arm, cy, cz)
+            # Vertical arm
+            points.InsertNextPoint(cx, cy - arm, cz)
+            points.InsertNextPoint(cx, cy + arm, cz)
+            # Z arm (visible in coronal/sagittal)
+            points.InsertNextPoint(cx, cy, cz - arm)
+            points.InsertNextPoint(cx, cy, cz + arm)
+            for i in range(0, 6, 2):
+                lines.InsertNextCell(2)
+                lines.InsertCellPoint(i)
+                lines.InsertCellPoint(i + 1)
 
-            # Colored fill sphere
-            sphere_in = vtkSphereSource()
-            sphere_in.SetCenter(*pos)
-            sphere_in.SetRadius(1.8)
-            sphere_in.SetPhiResolution(16)
-            sphere_in.SetThetaResolution(16)
-            mapper_in = vtkPolyDataMapper()
-            mapper_in.SetInputConnection(sphere_in.GetOutputPort())
-            actor_in = vtkActor()
-            actor_in.SetMapper(mapper_in)
-            actor_in.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
-            actor_in.GetProperty().SetOpacity(0.95)
-            self._vtk_renderer.AddActor(actor_in)
-            self._overlay_actors.append(actor_in)
+            pd = vtkPolyData()
+            pd.SetPoints(points)
+            pd.SetLines(lines)
+
+            # White outline (wider)
+            m1 = vtkPolyDataMapper()
+            m1.SetInputData(pd)
+            a1 = vtkActor()
+            a1.SetMapper(m1)
+            a1.GetProperty().SetColor(1.0, 1.0, 1.0)
+            a1.GetProperty().SetLineWidth(4.0)
+            a1.GetProperty().SetOpacity(0.7)
+            self._vtk_renderer.AddActor(a1)
+            self._overlay_actors.append(a1)
+
+            # Colored crosshair (on top)
+            m2 = vtkPolyDataMapper()
+            m2.SetInputData(pd)
+            a2 = vtkActor()
+            a2.SetMapper(m2)
+            a2.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+            a2.GetProperty().SetLineWidth(2.0)
+            a2.GetProperty().SetOpacity(0.95)
+            self._vtk_renderer.AddActor(a2)
+            self._overlay_actors.append(a2)
 
         self._render()
 

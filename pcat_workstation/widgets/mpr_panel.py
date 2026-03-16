@@ -56,10 +56,30 @@ class MPRPanel(QWidget):
         for viewer in (self._axial, self._coronal, self._sagittal):
             viewer.crosshair_moved.connect(self._on_crosshair_moved)
             viewer.window_level_changed.connect(self._on_window_level_changed)
+            viewer.slice_changed.connect(self._on_slice_changed)
 
         # CPR → MPR sync: when needle moves, jump MPR viewers to that 3D location
         self._cpr_view.needle_moved.connect(self._on_cpr_needle_moved)
         self._cpr_view.window_level_changed.connect(self._on_window_level_changed)
+
+    def _on_slice_changed(self, _index: int) -> None:
+        """When any viewer scrolls, update crosshair lines on all other viewers."""
+        if self._linking or self._spacing is None:
+            return
+        self._linking = True
+        try:
+            sender = self.sender()
+            # Build the current 3D position from all viewers' slices
+            sx, sy, sz = self._spacing[2], self._spacing[1], self._spacing[0]
+            x_mm = self._sagittal.get_slice() * sx
+            y_mm = self._coronal.get_slice() * sy
+            z_mm = self._axial.get_slice() * sz
+
+            for viewer in (self._axial, self._coronal, self._sagittal):
+                if viewer is not sender:
+                    viewer.update_crosshair_lines(x_mm, y_mm, z_mm)
+        finally:
+            self._linking = False
 
     def _on_crosshair_moved(self, x_mm: float, y_mm: float, z_mm: float) -> None:
         if self._linking:
@@ -70,6 +90,9 @@ class MPRPanel(QWidget):
             for viewer in (self._axial, self._coronal, self._sagittal):
                 if viewer is not sender:
                     viewer.set_crosshair(x_mm, y_mm, z_mm)
+                else:
+                    # Update crosshair lines on the sender too (it changed position)
+                    viewer.update_crosshair_lines(x_mm, y_mm, z_mm)
             self.crosshair_moved.emit(x_mm, y_mm, z_mm)
         finally:
             self._linking = False

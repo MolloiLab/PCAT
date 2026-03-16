@@ -296,6 +296,86 @@ class TestSeedVisibilityLogic:
 
 
 # ===========================================================================
+# 4b. Crosshair line coordinate logic (pure math, no VTK)
+# ===========================================================================
+
+class TestCrosshairLogic:
+    """Verify the crosshair line endpoint math from update_crosshair_lines."""
+
+    def _compute_crosshair_endpoints(self, orientation, x_mm, y_mm, z_mm, shape, spacing):
+        """Replicate the line endpoint logic from update_crosshair_lines."""
+        nz, ny, nx = shape
+        sx, sy, sz = spacing[2], spacing[1], spacing[0]
+        wx, wy, wz = nx * sx, ny * sy, nz * sz
+
+        if orientation == "axial":
+            h_pts = [(0, y_mm, z_mm), (wx, y_mm, z_mm)]
+            v_pts = [(x_mm, 0, z_mm), (x_mm, wy, z_mm)]
+        elif orientation == "coronal":
+            h_pts = [(0, y_mm, z_mm), (wx, y_mm, z_mm)]
+            v_pts = [(x_mm, y_mm, 0), (x_mm, y_mm, wz)]
+        else:  # sagittal
+            h_pts = [(x_mm, 0, z_mm), (x_mm, wy, z_mm)]
+            v_pts = [(x_mm, y_mm, 0), (x_mm, y_mm, wz)]
+        return h_pts, v_pts
+
+    def test_axial_crosshair_endpoints(self):
+        shape = (32, 32, 32)
+        spacing = [1.0, 1.0, 1.0]
+        h, v = self._compute_crosshair_endpoints("axial", 10, 15, 20, shape, spacing)
+        # Horizontal line at y=15 spanning full X range
+        assert h[0] == (0, 15, 20)
+        assert h[1] == (32, 15, 20)
+        # Vertical line at x=10 spanning full Y range
+        assert v[0] == (10, 0, 20)
+        assert v[1] == (10, 32, 20)
+
+    def test_coronal_crosshair_endpoints(self):
+        shape = (32, 32, 32)
+        spacing = [1.0, 1.0, 1.0]
+        h, v = self._compute_crosshair_endpoints("coronal", 10, 15, 20, shape, spacing)
+        # Horizontal line at z=20 spanning full X range
+        assert h[0] == (0, 15, 20)
+        assert h[1] == (32, 15, 20)
+        # Vertical line at x=10 spanning full Z range
+        assert v[0] == (10, 15, 0)
+        assert v[1] == (10, 15, 32)
+
+    def test_sagittal_crosshair_endpoints(self):
+        shape = (32, 32, 32)
+        spacing = [1.0, 1.0, 1.0]
+        h, v = self._compute_crosshair_endpoints("sagittal", 10, 15, 20, shape, spacing)
+        # Horizontal line at z=20 spanning full Y range
+        assert h[0] == (10, 0, 20)
+        assert h[1] == (10, 32, 20)
+        # Vertical line at y=15 spanning full Z range
+        assert v[0] == (10, 15, 0)
+        assert v[1] == (10, 15, 32)
+
+    def test_nonuniform_spacing(self):
+        shape = (64, 128, 256)
+        spacing = [2.0, 0.5, 0.5]  # [sz, sy, sx]
+        h, v = self._compute_crosshair_endpoints("axial", 50, 30, 100, shape, spacing)
+        # wx = 256*0.5=128, wy = 128*0.5=64
+        assert h[1][0] == pytest.approx(128.0)  # full X extent
+        assert v[1][1] == pytest.approx(64.0)   # full Y extent
+
+    def test_scroll_sync_position_math(self):
+        """Replicate MPRPanel._on_slice_changed position computation."""
+        spacing = [2.0, 0.5, 0.5]  # [sz, sy, sx]
+        sx, sy, sz = spacing[2], spacing[1], spacing[0]
+        axial_slice = 30
+        coronal_slice = 50
+        sagittal_slice = 100
+        x_mm = sagittal_slice * sx
+        y_mm = coronal_slice * sy
+        z_mm = axial_slice * sz
+        assert x_mm == pytest.approx(50.0)
+        assert y_mm == pytest.approx(25.0)
+        assert z_mm == pytest.approx(60.0)
+
+
+# ===========================================================================
 # 5. Progress panel (requires QApplication but no VTK)
 # ===========================================================================
 

@@ -170,6 +170,8 @@ class VTKSliceView(QWidget):
         self._seed_actor_info: list = []  # [{"actors": [...], "world_pos": (cx, cy, cz)}]
         self._voi_slice = None
         self._voi_mapper = None
+        self._crosshair_actors: list = []  # [h_line_actor, v_line_actor]
+        self._crosshair_pos: Optional[tuple] = None  # (x_mm, y_mm, z_mm)
 
         self._build_ui()
         self._setup_vtk()
@@ -406,7 +408,7 @@ class VTKSliceView(QWidget):
     # ── Crosshair ───────────────────────────────────────────────────
 
     def set_crosshair(self, x_mm: float, y_mm: float, z_mm: float) -> None:
-        """Set slice from patient coordinates (mm). Crosshair drawing deferred to Phase 2."""
+        """Set slice from patient coordinates (mm) and draw crosshair lines."""
         if self._volume is None:
             return
 
@@ -420,6 +422,65 @@ class VTKSliceView(QWidget):
             voxel_idx = int(round(x_mm / sx)) if sx > 0 else 0
 
         self.set_slice(voxel_idx)
+        self.update_crosshair_lines(x_mm, y_mm, z_mm)
+
+    def update_crosshair_lines(self, x_mm: float, y_mm: float, z_mm: float) -> None:
+        """Draw crosshair reference lines without changing the slice.
+
+        Each view shows two lines indicating where the other two views'
+        current slices intersect this plane.
+        """
+        if self._volume is None:
+            return
+
+        self._crosshair_pos = (x_mm, y_mm, z_mm)
+
+        # Remove old crosshair actors
+        for actor in self._crosshair_actors:
+            self._vtk_renderer.RemoveActor(actor)
+        self._crosshair_actors.clear()
+
+        nz, ny, nx = self._shape
+        sx, sy, sz = self._spacing[2], self._spacing[1], self._spacing[0]
+        # Physical extents
+        wx, wy, wz = nx * sx, ny * sy, nz * sz
+
+        if self._orientation == "axial":
+            # Axial plane (fixed Z): show coronal pos (Y) as horizontal, sagittal pos (X) as vertical
+            h_pts = [(0, y_mm, z_mm), (wx, y_mm, z_mm)]
+            v_pts = [(x_mm, 0, z_mm), (x_mm, wy, z_mm)]
+        elif self._orientation == "coronal":
+            # Coronal plane (fixed Y): show axial pos (Z) as horizontal, sagittal pos (X) as vertical
+            h_pts = [(0, y_mm, z_mm), (wx, y_mm, z_mm)]
+            v_pts = [(x_mm, y_mm, 0), (x_mm, y_mm, wz)]
+        else:  # sagittal
+            # Sagittal plane (fixed X): show axial pos (Z) as horizontal, coronal pos (Y) as vertical
+            h_pts = [(x_mm, 0, z_mm), (x_mm, wy, z_mm)]
+            v_pts = [(x_mm, y_mm, 0), (x_mm, y_mm, wz)]
+
+        for pts, color in [(h_pts, (0.25, 0.75, 1.0)), (v_pts, (1.0, 0.85, 0.15))]:
+            points = vtkPoints()
+            points.InsertNextPoint(*pts[0])
+            points.InsertNextPoint(*pts[1])
+            lines = vtkCellArray()
+            lines.InsertNextCell(2)
+            lines.InsertCellPoint(0)
+            lines.InsertCellPoint(1)
+            pd = vtkPolyData()
+            pd.SetPoints(points)
+            pd.SetLines(lines)
+
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputData(pd)
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(*color)
+            actor.GetProperty().SetLineWidth(1.0)
+            actor.GetProperty().SetOpacity(0.5)
+            self._vtk_renderer.AddActor(actor)
+            self._crosshair_actors.append(actor)
+
+        self._render()
 
     def _emit_crosshair_at_cursor(self) -> None:
         """Convert current cursor position to patient coords and emit crosshair_moved."""
@@ -519,6 +580,10 @@ class VTKSliceView(QWidget):
             self._vtk_renderer.RemoveActor(actor)
         self._overlay_actors.clear()
         self._seed_actor_info.clear()
+        for actor in self._crosshair_actors:
+            self._vtk_renderer.RemoveActor(actor)
+        self._crosshair_actors.clear()
+        self._crosshair_pos = None
         if self._voi_slice is not None:
             self._vtk_renderer.RemoveViewProp(self._voi_slice)
             self._voi_slice = None

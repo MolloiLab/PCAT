@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QKeySequence, QAction
 from pathlib import Path
 from typing import Optional
+import numpy as np
 
 from pcat_workstation.widgets.dicom_browser import DicomBrowser
 from pcat_workstation.widgets.progress_panel import ProgressPanel
@@ -301,6 +302,10 @@ class MainWindow(QMainWindow):
             self._mpr_panel.set_volume(volume, spacing)
         if meta:
             self._dicom_browser.set_patient_info(meta)
+
+        # Restore overlays from saved pipeline artifacts
+        self._restore_overlays()
+
         self.statusBar().showMessage(f"Resumed: {self._session.patient_id}")
         self._loader_worker = None
 
@@ -367,8 +372,17 @@ class MainWindow(QMainWindow):
         ):
             return  # Already running
 
-        # Determine resume point
+        # If all stages are "complete" but results are missing/empty,
+        # or if user explicitly re-runs, reset and start fresh.
         resume_from = self._session.get_resume_stage()
+        if resume_from is None:
+            # All stages complete — force full re-run
+            for stage in self._session.stage_status:
+                if stage != "import":
+                    self._session.set_stage_status(stage, "pending")
+            self._progress_panel.reset_stages()
+            self._progress_panel.set_stage_status("import", "complete")
+            resume_from = self._session.get_resume_stage()
 
         self._pipeline_worker = PipelineWorker(
             session=self._session,
@@ -456,26 +470,44 @@ class MainWindow(QMainWindow):
         meta = self._session.get_meta() if self._session else None
         if meta:
             self._mpr_panel.set_seed_overlay(seeds_dict, meta["spacing_mm"])
+            self._save_overlays(seeds=seeds_dict)
 
     @Slot(object)
     def _on_centerlines_ready(self, centerlines_dict: dict) -> None:
         meta = self._session.get_meta() if self._session else None
         if meta:
             self._mpr_panel.set_centerline_overlay(centerlines_dict, meta["spacing_mm"])
+            self._save_overlays(centerlines=centerlines_dict)
 
     @Slot(object)
     def _on_contours_ready(self, contour_results_dict: dict) -> None:
         self._mpr_panel.set_contour_overlay(contour_results_dict)
+        # ContourResult dataclasses are not trivially serializable;
+        # centerlines + CPR give sufficient visual context on resume.
 
     @Slot(object)
     def _on_voi_masks_ready(self, voi_masks_dict: dict) -> None:
         meta = self._session.get_meta() if self._session else None
         if meta:
             self._mpr_panel.set_voi_overlay(voi_masks_dict, meta["spacing_mm"])
+        # VOI masks are large (~75MB); skip saving — centerlines+CPR suffice.
 
     @Slot(str, object)
     def _on_cpr_ready(self, vessel: str, cpr_image) -> None:
         self._mpr_panel.set_cpr_data(vessel, cpr_image)
+        # Save CPR images incrementally
+        overlay_path = self._session.session_dir / "overlays.npz" if self._session else None
+        if overlay_path:
+            existing_cpr = {}
+            if overlay_path.exists():
+                try:
+                    with np.load(str(overlay_path), allow_pickle=True) as f:
+                        if "cpr_images" in f:
+                            existing_cpr = f["cpr_images"].item()
+                except Exception:
+                    pass
+            existing_cpr[vessel] = cpr_image
+            self._save_overlays(cpr_images=existing_cpr)
 
     @Slot(str)
     def _on_vessel_changed(self, vessel: str) -> None:
@@ -531,3 +563,57 @@ class MainWindow(QMainWindow):
         """Populate the DICOM browser sidebar with recent projects."""
         recent = self._dicom_index.get_recent()
         self._dicom_browser.load_recent(recent)
+
+    def _restore_overlays(self) -> None:
+        """Reload pipeline overlays from saved .npz in the session directory."""
+        if self._session is None:
+            return
+
+        meta = self._session.get_meta()
+        if meta is None:
+            return
+        spacing = meta.get("spacing_mm", [1.0, 1.0, 1.0])
+        overlay_path = self._session.session_dir / "overlays.npz"
+        if not overlay_path.exists():
+            return
+
+        try:
+            data = np.load(str(overlay_path), allow_pickle=True)
+
+            # Seeds
+            if "seeds" in data:
+                self._mpr_panel.set_seed_overlay(data["seeds"].item(), spacing)
+
+            # Centerlines
+            if "centerlines" in data:
+                self._mpr_panel.set_centerline_overlay(data["centerlines"].item(), spacing)
+
+            # CPR images
+            if "cpr_images" in data:
+                for vessel, img in data["cpr_images"].item().items():
+                    self._mpr_panel.set_cpr_data(vessel, img)
+
+            self.statusBar().showMessage(
+                f"Resumed: {self._session.patient_id} (overlays restored)"
+            )
+        except Exception as exc:
+            self.statusBar().showMessage(f"Resumed (overlay restore failed: {exc})")
+
+    def _save_overlays(self, **kwargs) -> None:
+        """Incrementally save overlay data to session_dir/overlays.npz."""
+        if self._session is None:
+            return
+        overlay_path = self._session.session_dir / "overlays.npz"
+
+        # Load existing data
+        existing = {}
+        if overlay_path.exists():
+            try:
+                with np.load(str(overlay_path), allow_pickle=True) as f:
+                    for key in f.files:
+                        existing[key] = f[key]
+            except Exception:
+                pass
+
+        existing.update(kwargs)
+        np.savez(str(overlay_path), **existing)

@@ -63,12 +63,11 @@ class MPRPanel(QWidget):
         self._cpr_view.window_level_changed.connect(self._on_window_level_changed)
 
     def _on_slice_changed(self, _index: int) -> None:
-        """When any viewer scrolls, update crosshair lines on all other viewers."""
+        """When any viewer scrolls, update crosshair lines on ALL viewers."""
         if self._linking or self._spacing is None:
             return
         self._linking = True
         try:
-            sender = self.sender()
             # Build the current 3D position from all viewers' slices
             sx, sy, sz = self._spacing[2], self._spacing[1], self._spacing[0]
             x_mm = self._sagittal.get_slice() * sx
@@ -76,8 +75,7 @@ class MPRPanel(QWidget):
             z_mm = self._axial.get_slice() * sz
 
             for viewer in (self._axial, self._coronal, self._sagittal):
-                if viewer is not sender:
-                    viewer.update_crosshair_lines(x_mm, y_mm, z_mm)
+                viewer.update_crosshair_lines(x_mm, y_mm, z_mm)
         finally:
             self._linking = False
 
@@ -134,6 +132,15 @@ class MPRPanel(QWidget):
         vtk_image = VTKSliceView.build_vtk_image_data(volume, spacing, self._vtk_flat)
         for viewer in (self._axial, self._coronal, self._sagittal):
             viewer.set_volume_from_vtk(volume, spacing, vtk_image)
+
+        # Initialize crosshairs at center of volume
+        sx, sy, sz = spacing[2], spacing[1], spacing[0]
+        nz, ny, nx = volume.shape
+        cx = (nx // 2) * sx
+        cy = (ny // 2) * sy
+        cz = (nz // 2) * sz
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.update_crosshair_lines(cx, cy, cz)
 
     def set_window_level(self, window: float, level: float) -> None:
         """Sync window/level across all viewers including CPR."""

@@ -48,7 +48,7 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
     right_drag_event = Signal(int, int)  # dx, dy from drag start
     right_press_event = Signal()
     right_release_event = Signal()
-    left_click_event = Signal()
+    left_click_event = Signal(int, int)   # (x_pixel, y_pixel)
     ctrl_scroll_event = Signal(int)      # +1 zoom in, -1 zoom out
 
     def __init__(self, parent=None, **kw):
@@ -122,7 +122,9 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
             self._right_start = (ev.position().x(), ev.position().y())
             self.right_press_event.emit()
         elif ev.button() == _Qt.LeftButton:
-            self.left_click_event.emit()
+            self.left_click_event.emit(
+                int(ev.position().x()), int(ev.position().y())
+            )
         ev.accept()
 
     def mouseReleaseEvent(self, ev):
@@ -445,18 +447,22 @@ class VTKSliceView(QWidget):
         # Physical extents
         wx, wy, wz = nx * sx, ny * sy, nz * sz
 
+        # Lines must lie ON the current slice plane (fixed axis = current slice position)
         if self._orientation == "axial":
-            # Axial plane (fixed Z): show coronal pos (Y) as horizontal, sagittal pos (X) as vertical
-            h_pts = [(0, y_mm, z_mm), (wx, y_mm, z_mm)]
-            v_pts = [(x_mm, 0, z_mm), (x_mm, wy, z_mm)]
+            # Fixed Z plane at current slice; show Y (coronal) and X (sagittal) positions
+            fixed_z = self._current_slice * sz
+            h_pts = [(0, y_mm, fixed_z), (wx, y_mm, fixed_z)]
+            v_pts = [(x_mm, 0, fixed_z), (x_mm, wy, fixed_z)]
         elif self._orientation == "coronal":
-            # Coronal plane (fixed Y): show axial pos (Z) as horizontal, sagittal pos (X) as vertical
-            h_pts = [(0, y_mm, z_mm), (wx, y_mm, z_mm)]
-            v_pts = [(x_mm, y_mm, 0), (x_mm, y_mm, wz)]
+            # Fixed Y plane at current slice; show Z (axial) and X (sagittal) positions
+            fixed_y = self._current_slice * sy
+            h_pts = [(0, fixed_y, z_mm), (wx, fixed_y, z_mm)]
+            v_pts = [(x_mm, fixed_y, 0), (x_mm, fixed_y, wz)]
         else:  # sagittal
-            # Sagittal plane (fixed X): show axial pos (Z) as horizontal, coronal pos (Y) as vertical
-            h_pts = [(x_mm, 0, z_mm), (x_mm, wy, z_mm)]
-            v_pts = [(x_mm, y_mm, 0), (x_mm, y_mm, wz)]
+            # Fixed X plane at current slice; show Z (axial) and Y (coronal) positions
+            fixed_x = self._current_slice * sx
+            h_pts = [(fixed_x, 0, z_mm), (fixed_x, wy, z_mm)]
+            v_pts = [(fixed_x, y_mm, 0), (fixed_x, y_mm, wz)]
 
         for pts, color in [(h_pts, (0.25, 0.75, 1.0)), (v_pts, (1.0, 0.85, 0.15))]:
             points = vtkPoints()
@@ -482,16 +488,17 @@ class VTKSliceView(QWidget):
 
         self._render()
 
-    def _emit_crosshair_at_cursor(self) -> None:
-        """Convert current cursor position to patient coords and emit crosshair_moved."""
+    def _emit_crosshair_at_cursor(self, qt_x: int, qt_y: int) -> None:
+        """Convert Qt click position to patient coords and emit crosshair_moved."""
         if self._volume is None:
             return
 
-        interactor = self._vtk_widget.GetRenderWindow().GetInteractor()
-        event_x, event_y = interactor.GetEventPosition()
+        # Convert Qt widget coords to VTK display coords (Y is flipped)
+        scale = self._vtk_widget._getPixelRatio()
+        display_x = int(qt_x * scale)
+        display_y = int((self._vtk_widget.height() - qt_y) * scale)
 
-        # Pick the world coordinate at cursor
-        self._vtk_renderer.SetDisplayPoint(event_x, event_y, 0)
+        self._vtk_renderer.SetDisplayPoint(display_x, display_y, 0)
         self._vtk_renderer.DisplayToWorld()
         world = self._vtk_renderer.GetWorldPoint()
 

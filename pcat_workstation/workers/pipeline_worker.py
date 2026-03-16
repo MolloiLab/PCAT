@@ -46,6 +46,7 @@ class PipelineWorker(QThread):
     centerlines_ready = Signal(object)
     contours_ready = Signal(object)
     cpr_ready = Signal(str, object)  # (vessel_name, cpr_image_2d)
+    radii_ready = Signal(object)  # {vessel: radii_mm_array}
     voi_masks_ready = Signal(object)
 
     def __init__(
@@ -289,6 +290,12 @@ class PipelineWorker(QThread):
 
                 cl_viz = {v: d["proximal"] for v, d in self.vessel_centerlines.items()}
                 self.centerlines_ready.emit(cl_viz)
+
+                # Also emit radii for CPR cross-section VOI ring
+                radii_viz = {v: d["radii"] for v, d in self.vessel_centerlines.items()
+                             if "radii" in d}
+                if radii_viz:
+                    self.radii_ready.emit(radii_viz)
             except Exception as exc:
                 self._handle_stage_failure("centerlines", exc)
                 self.pipeline_failed.emit(

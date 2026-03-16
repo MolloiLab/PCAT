@@ -1,7 +1,7 @@
-"""2x2 MPR panel with linked axial, coronal, sagittal viewers and a CPR placeholder."""
+"""2x2 MPR panel with linked axial, coronal, sagittal viewers and interactive CPR."""
 
-from PySide6.QtWidgets import QWidget, QGridLayout, QLabel
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtWidgets import QWidget, QGridLayout
+from PySide6.QtCore import Signal
 import numpy as np
 
 from pcat_workstation.widgets.vtk_slice_view import VTKSliceView
@@ -13,7 +13,7 @@ class MPRPanel(QWidget):
 
     Layout:
         Top-left: Axial       Top-right: Coronal
-        Bottom-left: Sagittal  Bottom-right: CPR placeholder
+        Bottom-left: Sagittal  Bottom-right: Interactive CPR
     """
 
     window_level_changed = Signal(float, float)
@@ -22,6 +22,9 @@ class MPRPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._linking = False
+        self._volume = None
+        self._spacing = None
+        self._contour_results: dict = {}  # vessel -> ContourResult
         self._build_ui()
         self._connect_signals()
 
@@ -54,6 +57,10 @@ class MPRPanel(QWidget):
             viewer.crosshair_moved.connect(self._on_crosshair_moved)
             viewer.window_level_changed.connect(self._on_window_level_changed)
 
+        # CPR → MPR sync: when needle moves, jump MPR viewers to that 3D location
+        self._cpr_view.needle_moved.connect(self._on_cpr_needle_moved)
+        self._cpr_view.window_level_changed.connect(self._on_window_level_changed)
+
     def _on_crosshair_moved(self, x_mm: float, y_mm: float, z_mm: float) -> None:
         if self._linking:
             return
@@ -67,6 +74,18 @@ class MPRPanel(QWidget):
         finally:
             self._linking = False
 
+    def _on_cpr_needle_moved(self, x_mm: float, y_mm: float, z_mm: float) -> None:
+        """CPR needle moved — sync all MPR viewers to the 3D position."""
+        if self._linking:
+            return
+        self._linking = True
+        try:
+            for viewer in (self._axial, self._coronal, self._sagittal):
+                viewer.set_crosshair(x_mm, y_mm, z_mm)
+            self.crosshair_moved.emit(x_mm, y_mm, z_mm)
+        finally:
+            self._linking = False
+
     def _on_window_level_changed(self, window: float, level: float) -> None:
         if self._linking:
             return
@@ -76,6 +95,8 @@ class MPRPanel(QWidget):
             for viewer in (self._axial, self._coronal, self._sagittal):
                 if viewer is not sender:
                     viewer.set_window_level(window, level)
+            if sender is not self._cpr_view:
+                self._cpr_view.set_window_level(window, level)
             self.window_level_changed.emit(window, level)
         finally:
             self._linking = False
@@ -83,22 +104,19 @@ class MPRPanel(QWidget):
     # ── Public API ───────────────────────────────────────────────────
 
     def set_volume(self, volume: np.ndarray, spacing: list) -> None:
-        """Pass volume and spacing to all three VTK viewers.
-
-        Builds VTK image data once and shares it across viewers to avoid
-        tripling memory usage for the numpy→VTK copy.
-        The flattened array is kept alive here so that VTK's zero-copy
-        pointer remains valid for all three viewers.
-        """
+        """Pass volume and spacing to all three VTK viewers and CPR view."""
+        self._volume = volume
+        self._spacing = list(spacing)
         self._vtk_flat = np.ascontiguousarray(volume, dtype=np.float32).ravel()
         vtk_image = VTKSliceView.build_vtk_image_data(volume, spacing, self._vtk_flat)
         for viewer in (self._axial, self._coronal, self._sagittal):
             viewer.set_volume_from_vtk(volume, spacing, vtk_image)
 
     def set_window_level(self, window: float, level: float) -> None:
-        """Sync window/level across all viewers."""
+        """Sync window/level across all viewers including CPR."""
         for viewer in (self._axial, self._coronal, self._sagittal):
             viewer.set_window_level(window, level)
+        self._cpr_view.set_window_level(window, level)
 
     def get_viewers(self) -> dict:
         """Return dict of named viewers."""
@@ -134,6 +152,15 @@ class MPRPanel(QWidget):
         for viewer in (self._axial, self._coronal, self._sagittal):
             viewer.set_voi_overlay(voi_masks_dict, spacing)
 
+    def set_contour_data(self, contour_results_dict: dict) -> None:
+        """Store ContourResult objects and pass to CPR view for cross-section rendering."""
+        self._contour_results = contour_results_dict
+        if self._volume is not None and self._spacing is not None:
+            for vessel, cr in contour_results_dict.items():
+                self._cpr_view.set_contour_data(
+                    vessel, cr, self._volume, self._spacing,
+                )
+
     def set_cpr_data(self, vessel: str, cpr_image: np.ndarray) -> None:
         """Store a CPR image for a vessel in the CPR view."""
         self._cpr_view.set_cpr_data(vessel, cpr_image)
@@ -144,4 +171,5 @@ class MPRPanel(QWidget):
 
     def clear_cpr(self) -> None:
         """Clear CPR data."""
+        self._contour_results.clear()
         self._cpr_view.clear()

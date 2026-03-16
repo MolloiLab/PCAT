@@ -15,6 +15,8 @@ from vtkmodules.vtkRenderingCore import (
 from vtkmodules.vtkCommonCore import vtkPoints
 from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkCellArray
 from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+from vtkmodules.vtkFiltersSources import vtkRegularPolygonSource
+from vtkmodules.vtkFiltersCore import vtkAppendPolyData
 from vtk.util.numpy_support import numpy_to_vtk
 from typing import Optional
 
@@ -496,29 +498,69 @@ class VTKSliceView(QWidget):
         self._render()
 
     def set_seed_overlay(self, seeds_dict: dict, spacing: list) -> None:
-        """Show seed/ostium points as flat crosshair markers.
+        """Show seed/ostium points as circle (disk) markers with short crosshair stubs.
 
-        Each seed renders as a vessel-colored + with a white outline +,
-        flat on the slice plane — no 3D spheres.
+        Each seed renders as three oriented circles (XY, XZ, YZ planes) so the
+        marker is visible from any view orientation, plus short crosshair stubs
+        for precise center indication. Two-layer rendering: white outline
+        underneath, vessel-colored fill on top.
         """
         sx, sy, sz = spacing[2], spacing[1], spacing[0]
-        arm = 3.0  # crosshair arm length in mm
+        radius = 2.0   # circle radius in mm
+        n_sides = 32    # polygon sides (approximates circle)
+        arm = 1.0       # short crosshair stub arm length in mm
 
         for vessel, ijk in seeds_dict.items():
             z, y, x = float(ijk[0]), float(ijk[1]), float(ijk[2])
             cx, cy, cz = x * sx, y * sy, z * sz
             rgb = _VESSEL_COLORS_RGB.get(vessel, (232, 83, 58))
 
-            # Build a crosshair (two perpendicular line segments)
+            # --- Build circle geometry in 3 planes ---
+            appender = vtkAppendPolyData()
+
+            # XY plane circle (normal along Z)
+            circle_xy = vtkRegularPolygonSource()
+            circle_xy.SetNumberOfSides(n_sides)
+            circle_xy.SetRadius(radius)
+            circle_xy.SetCenter(cx, cy, cz)
+            circle_xy.SetNormal(0, 0, 1)
+            circle_xy.GeneratePolygonOn()
+            circle_xy.Update()
+            appender.AddInputData(circle_xy.GetOutput())
+
+            # XZ plane circle (normal along Y)
+            circle_xz = vtkRegularPolygonSource()
+            circle_xz.SetNumberOfSides(n_sides)
+            circle_xz.SetRadius(radius)
+            circle_xz.SetCenter(cx, cy, cz)
+            circle_xz.SetNormal(0, 1, 0)
+            circle_xz.GeneratePolygonOn()
+            circle_xz.Update()
+            appender.AddInputData(circle_xz.GetOutput())
+
+            # YZ plane circle (normal along X)
+            circle_yz = vtkRegularPolygonSource()
+            circle_yz.SetNumberOfSides(n_sides)
+            circle_yz.SetRadius(radius)
+            circle_yz.SetCenter(cx, cy, cz)
+            circle_yz.SetNormal(1, 0, 0)
+            circle_yz.GeneratePolygonOn()
+            circle_yz.Update()
+            appender.AddInputData(circle_yz.GetOutput())
+
+            appender.Update()
+            circle_pd = appender.GetOutput()
+
+            # --- Build short crosshair stub lines ---
             points = vtkPoints()
             lines = vtkCellArray()
-            # Horizontal arm
+            # X arm
             points.InsertNextPoint(cx - arm, cy, cz)
             points.InsertNextPoint(cx + arm, cy, cz)
-            # Vertical arm
+            # Y arm
             points.InsertNextPoint(cx, cy - arm, cz)
             points.InsertNextPoint(cx, cy + arm, cz)
-            # Z arm (visible in coronal/sagittal)
+            # Z arm
             points.InsertNextPoint(cx, cy, cz - arm)
             points.InsertNextPoint(cx, cy, cz + arm)
             for i in range(0, 6, 2):
@@ -526,31 +568,54 @@ class VTKSliceView(QWidget):
                 lines.InsertCellPoint(i)
                 lines.InsertCellPoint(i + 1)
 
-            pd = vtkPolyData()
-            pd.SetPoints(points)
-            pd.SetLines(lines)
+            stub_pd = vtkPolyData()
+            stub_pd.SetPoints(points)
+            stub_pd.SetLines(lines)
 
-            # White outline (wider)
+            # --- Layer 1: White outline circles (edge only) ---
             m1 = vtkPolyDataMapper()
-            m1.SetInputData(pd)
+            m1.SetInputData(circle_pd)
             a1 = vtkActor()
             a1.SetMapper(m1)
             a1.GetProperty().SetColor(1.0, 1.0, 1.0)
-            a1.GetProperty().SetLineWidth(4.0)
+            a1.GetProperty().SetRepresentationToWireframe()
+            a1.GetProperty().SetLineWidth(2.0)
             a1.GetProperty().SetOpacity(0.7)
             self._vtk_renderer.AddActor(a1)
             self._overlay_actors.append(a1)
 
-            # Colored crosshair (on top)
+            # White outline for stubs
+            m1s = vtkPolyDataMapper()
+            m1s.SetInputData(stub_pd)
+            a1s = vtkActor()
+            a1s.SetMapper(m1s)
+            a1s.GetProperty().SetColor(1.0, 1.0, 1.0)
+            a1s.GetProperty().SetLineWidth(3.0)
+            a1s.GetProperty().SetOpacity(0.7)
+            self._vtk_renderer.AddActor(a1s)
+            self._overlay_actors.append(a1s)
+
+            # --- Layer 2: Vessel-colored filled circles ---
             m2 = vtkPolyDataMapper()
-            m2.SetInputData(pd)
+            m2.SetInputData(circle_pd)
             a2 = vtkActor()
             a2.SetMapper(m2)
             a2.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
-            a2.GetProperty().SetLineWidth(2.0)
-            a2.GetProperty().SetOpacity(0.95)
+            a2.GetProperty().SetRepresentationToSurface()
+            a2.GetProperty().SetOpacity(0.9)
             self._vtk_renderer.AddActor(a2)
             self._overlay_actors.append(a2)
+
+            # Colored stubs on top
+            m2s = vtkPolyDataMapper()
+            m2s.SetInputData(stub_pd)
+            a2s = vtkActor()
+            a2s.SetMapper(m2s)
+            a2s.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+            a2s.GetProperty().SetLineWidth(1.5)
+            a2s.GetProperty().SetOpacity(0.95)
+            self._vtk_renderer.AddActor(a2s)
+            self._overlay_actors.append(a2s)
 
         self._render()
 

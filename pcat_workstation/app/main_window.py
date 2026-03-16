@@ -482,8 +482,8 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _on_contours_ready(self, contour_results_dict: dict) -> None:
         self._mpr_panel.set_contour_overlay(contour_results_dict)
-        # ContourResult dataclasses are not trivially serializable;
-        # centerlines + CPR give sufficient visual context on resume.
+        # Pass ContourResult data to CPR view for interactive cross-section
+        self._mpr_panel.set_contour_data(contour_results_dict)
 
     @Slot(object)
     def _on_voi_masks_ready(self, voi_masks_dict: dict) -> None:

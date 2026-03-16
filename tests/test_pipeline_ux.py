@@ -442,11 +442,11 @@ class TestProgressPanel:
         panel.clear_vessel_summary()
         assert panel._vessel_layout.count() == 0
 
-    def test_progress_log_capped_at_10(self, panel):
+    def test_progress_log_capped_at_20(self, panel):
         panel.set_running(True)
-        for i in range(20):
+        for i in range(30):
             panel.set_progress_message(f"Message {i}")
-        assert panel._vessel_layout.count() <= 10
+        assert panel._vessel_layout.count() <= 20
 
     def test_no_vesselness_stage_row(self, panel):
         assert "vesselness" not in panel._stage_rows

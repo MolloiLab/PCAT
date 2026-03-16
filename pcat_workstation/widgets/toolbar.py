@@ -107,23 +107,24 @@ class MainToolBar(QToolBar):
         spacer.setStyleSheet("background: transparent;")
         self.addWidget(spacer)
 
-        # --- Run button ---
-        self._run_btn = QPushButton("\u25B6 Run")
+        # --- Run All button (full pipeline re-run) ---
+        self._run_btn = QPushButton("\u25B6\u25B6 Run All")
         self._run_btn.setMinimumHeight(32)
-        self._run_btn.setShortcut(QKeySequence("Ctrl+R"))
+        self._run_btn.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self._run_btn.setToolTip("Run entire pipeline from scratch (Ctrl+Shift+R)")
         self._run_btn.setStyleSheet(
             """
             QPushButton {
-                background-color: #0a84ff;
-                color: #ffffff;
-                border: none;
+                background-color: transparent;
+                color: #ff9f0a;
+                border: 1px solid #ff9f0a;
                 border-radius: 4px;
                 padding: 4px 16px;
-                font-size: 15pt;
+                font-size: 14pt;
                 font-weight: bold;
             }
-            QPushButton:hover { background-color: #0070e0; }
-            QPushButton:disabled { background-color: #3a3a3c; color: #636366; }
+            QPushButton:hover { background-color: #ff9f0a22; }
+            QPushButton:disabled { border-color: #3a3a3c; color: #636366; }
             """
         )
         self._run_btn.clicked.connect(self.run_clicked)

@@ -382,11 +382,16 @@ class MainWindow(QMainWindow):
         self._pipeline_worker.pipeline_completed.connect(self._on_pipeline_completed)
         self._pipeline_worker.pipeline_failed.connect(self._on_pipeline_failed)
         self._pipeline_worker.progress_message.connect(self._on_progress_message)
+        self._pipeline_worker.seeds_ready.connect(self._on_seeds_ready)
+        self._pipeline_worker.centerlines_ready.connect(self._on_centerlines_ready)
+        self._pipeline_worker.contours_ready.connect(self._on_contours_ready)
+        self._pipeline_worker.voi_masks_ready.connect(self._on_voi_masks_ready)
 
         self._progress_panel.set_running(True)
         self._toolbar.set_run_enabled(False)
         self._central_stack.setCurrentIndex(0)  # Show viewer during pipeline
 
+        self._mpr_panel.clear_overlays()
         self._pipeline_worker.start()
 
     @Slot(str)
@@ -443,6 +448,28 @@ class MainWindow(QMainWindow):
     def _on_progress_message(self, message: str) -> None:
         self.statusBar().showMessage(message)
         self._progress_panel.set_progress_message(message)
+
+    @Slot(object)
+    def _on_seeds_ready(self, seeds_dict: dict) -> None:
+        meta = self._session.get_meta() if self._session else None
+        if meta:
+            self._mpr_panel.set_seed_overlay(seeds_dict, meta["spacing_mm"])
+
+    @Slot(object)
+    def _on_centerlines_ready(self, centerlines_dict: dict) -> None:
+        meta = self._session.get_meta() if self._session else None
+        if meta:
+            self._mpr_panel.set_centerline_overlay(centerlines_dict, meta["spacing_mm"])
+
+    @Slot(object)
+    def _on_contours_ready(self, contour_results_dict: dict) -> None:
+        self._mpr_panel.set_contour_overlay(contour_results_dict)
+
+    @Slot(object)
+    def _on_voi_masks_ready(self, voi_masks_dict: dict) -> None:
+        meta = self._session.get_meta() if self._session else None
+        if meta:
+            self._mpr_panel.set_voi_overlay(voi_masks_dict, meta["spacing_mm"])
 
     @Slot(str)
     def _on_vessel_changed(self, vessel: str) -> None:

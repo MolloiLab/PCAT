@@ -12,8 +12,21 @@ from vtkmodules.vtkRenderingCore import (
     vtkImageSliceMapper,
     vtkImageProperty,
 )
+from vtkmodules.vtkCommonCore import vtkPoints, vtkUnsignedCharArray
+from vtkmodules.vtkCommonDataModel import vtkPolyData, vtkCellArray
+from vtkmodules.vtkFiltersSources import vtkSphereSource
+from vtkmodules.vtkFiltersCore import vtkGlyph3D
+from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 from vtk.util.numpy_support import numpy_to_vtk
 from typing import Optional
+
+
+_VESSEL_COLORS_RGB = {
+    "LAD": (255, 69, 58),
+    "LCx": (10, 132, 255),
+    "LCX": (10, 132, 255),
+    "RCA": (48, 209, 88),
+}
 
 
 class _SafeVTKWidget(QVTKRenderWindowInteractor):
@@ -151,6 +164,9 @@ class VTKSliceView(QWidget):
         self._current_slice: int = 0
         self._window: float = 1500.0
         self._level: float = 300.0
+        self._overlay_actors: list = []
+        self._voi_slice = None
+        self._voi_mapper = None
 
         self._build_ui()
         self._setup_vtk()
@@ -316,6 +332,16 @@ class VTKSliceView(QWidget):
             self._mapper.SetSliceNumber(index)
             self._mapper.SetOrientationToX()
 
+        # Keep VOI overlay in sync
+        if self._voi_mapper is not None:
+            self._voi_mapper.SetSliceNumber(index)
+            if self._orientation == "axial":
+                self._voi_mapper.SetOrientationToZ()
+            elif self._orientation == "coronal":
+                self._voi_mapper.SetOrientationToY()
+            else:
+                self._voi_mapper.SetOrientationToX()
+
         self._update_header()
         self._render()
         self.slice_changed.emit(self._current_slice)
@@ -454,6 +480,215 @@ class VTKSliceView(QWidget):
         cam.SetParallelScale(max(scale_by_height, scale_by_width))
 
         self._vtk_renderer.ResetCameraClippingRange()
+        self._render()
+
+    # ── Overlay rendering ─────────────────────────────────────────
+
+    def clear_overlays(self) -> None:
+        """Remove all overlay actors."""
+        for actor in self._overlay_actors:
+            self._vtk_renderer.RemoveActor(actor)
+        self._overlay_actors.clear()
+        if self._voi_slice is not None:
+            self._vtk_renderer.RemoveViewProp(self._voi_slice)
+            self._voi_slice = None
+            self._voi_mapper = None
+        self._render()
+
+    def set_seed_overlay(self, seeds_dict: dict, spacing: list) -> None:
+        """Show colored spheres at seed/ostium points."""
+        sx, sy, sz = spacing[2], spacing[1], spacing[0]
+
+        points = vtkPoints()
+        colors = vtkUnsignedCharArray()
+        colors.SetNumberOfComponents(3)
+        colors.SetName("Colors")
+
+        for vessel, ijk in seeds_dict.items():
+            z, y, x = ijk[0], ijk[1], ijk[2]
+            points.InsertNextPoint(x * sx, y * sy, z * sz)
+            rgb = _VESSEL_COLORS_RGB.get(vessel, (255, 255, 255))
+            colors.InsertNextTuple3(*rgb)
+
+        if points.GetNumberOfPoints() == 0:
+            return
+
+        pd = vtkPolyData()
+        pd.SetPoints(points)
+        pd.GetPointData().SetScalars(colors)
+
+        # Create vertex cells so glyph has something to work with
+        verts = vtkCellArray()
+        for i in range(points.GetNumberOfPoints()):
+            verts.InsertNextCell(1)
+            verts.InsertCellPoint(i)
+        pd.SetVerts(verts)
+
+        sphere = vtkSphereSource()
+        sphere.SetRadius(2.0)  # 2mm radius
+        sphere.SetPhiResolution(12)
+        sphere.SetThetaResolution(12)
+
+        glyph = vtkGlyph3D()
+        glyph.SetInputData(pd)
+        glyph.SetSourceConnection(sphere.GetOutputPort())
+        glyph.SetColorModeToColorByScalar()
+        glyph.ScalingOff()
+        glyph.Update()
+
+        mapper = vtkPolyDataMapper()
+        mapper.SetInputConnection(glyph.GetOutputPort())
+
+        actor = vtkActor()
+        actor.SetMapper(mapper)
+
+        self._vtk_renderer.AddActor(actor)
+        self._overlay_actors.append(actor)
+        self._render()
+
+    def set_centerline_overlay(self, centerlines_dict: dict, spacing: list) -> None:
+        """Show colored polylines for vessel centerlines."""
+        sx, sy, sz = spacing[2], spacing[1], spacing[0]
+
+        for vessel, cl_ijk in centerlines_dict.items():
+            if cl_ijk is None or len(cl_ijk) < 2:
+                continue
+
+            rgb = _VESSEL_COLORS_RGB.get(vessel, (255, 255, 255))
+
+            points = vtkPoints()
+            for pt in cl_ijk:
+                z, y, x = float(pt[0]), float(pt[1]), float(pt[2])
+                points.InsertNextPoint(x * sx, y * sy, z * sz)
+
+            lines = vtkCellArray()
+            lines.InsertNextCell(len(cl_ijk))
+            for i in range(len(cl_ijk)):
+                lines.InsertCellPoint(i)
+
+            pd = vtkPolyData()
+            pd.SetPoints(points)
+            pd.SetLines(lines)
+
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputData(pd)
+
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(rgb[0]/255, rgb[1]/255, rgb[2]/255)
+            actor.GetProperty().SetLineWidth(2.5)
+
+            self._vtk_renderer.AddActor(actor)
+            self._overlay_actors.append(actor)
+
+        self._render()
+
+    def set_contour_overlay(self, contour_results_dict: dict) -> None:
+        """Show colored contour outlines around vessel walls."""
+        for vessel, cr in contour_results_dict.items():
+            rgb = _VESSEL_COLORS_RGB.get(vessel, (255, 255, 255))
+
+            points = vtkPoints()
+            lines = vtkCellArray()
+            pt_offset = 0
+
+            # Show every 5th contour to avoid visual clutter
+            step = max(1, len(cr.contours) // 20)
+            for i in range(0, len(cr.contours), step):
+                contour = cr.contours[i]
+                n = len(contour)
+                if n < 3:
+                    continue
+
+                for pt in contour:
+                    z, y, x = float(pt[0]), float(pt[1]), float(pt[2])
+                    points.InsertNextPoint(x, y, z)  # already in mm
+
+                # Closed polyline
+                lines.InsertNextCell(n + 1)
+                for j in range(n):
+                    lines.InsertCellPoint(pt_offset + j)
+                lines.InsertCellPoint(pt_offset)  # close the loop
+                pt_offset += n
+
+            if points.GetNumberOfPoints() == 0:
+                continue
+
+            pd = vtkPolyData()
+            pd.SetPoints(points)
+            pd.SetLines(lines)
+
+            mapper = vtkPolyDataMapper()
+            mapper.SetInputData(pd)
+
+            actor = vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(rgb[0]/255, rgb[1]/255, rgb[2]/255)
+            actor.GetProperty().SetLineWidth(1.5)
+            actor.GetProperty().SetOpacity(0.7)
+
+            self._vtk_renderer.AddActor(actor)
+            self._overlay_actors.append(actor)
+
+        self._render()
+
+    def set_voi_overlay(self, voi_masks_dict: dict, spacing: list) -> None:
+        """Show semi-transparent colored VOI mask overlay."""
+        if self._volume is None:
+            return
+
+        nz, ny, nx = self._shape
+        combined = np.zeros((nz, ny, nx), dtype=np.uint8)
+
+        vessel_ids = {"LAD": 1, "LCx": 2, "LCX": 2, "RCA": 3}
+        for vessel, mask in voi_masks_dict.items():
+            vid = vessel_ids.get(vessel, 0)
+            if vid and mask.shape == (nz, ny, nx):
+                combined[mask] = vid
+
+        if combined.max() == 0:
+            return
+
+        # Build RGBA image (4 components)
+        rgba = np.zeros((nz, ny, nx, 4), dtype=np.uint8)
+        color_map = {
+            1: (255, 69, 58, 80),    # LAD
+            2: (10, 132, 255, 80),   # LCx
+            3: (48, 209, 88, 80),    # RCA
+        }
+        for vid, color in color_map.items():
+            mask = combined == vid
+            rgba[mask] = color
+
+        flat = rgba.ravel()
+        vtk_arr = numpy_to_vtk(flat, deep=True, array_type=3)  # VTK_UNSIGNED_CHAR
+        vtk_arr.SetNumberOfComponents(4)
+
+        vtk_img = vtkImageData()
+        vtk_img.SetDimensions(nx, ny, nz)
+        vtk_img.SetSpacing(spacing[2], spacing[1], spacing[0])
+        vtk_img.SetOrigin(0.0, 0.0, 0.0)
+        vtk_img.GetPointData().SetScalars(vtk_arr)
+
+        self._voi_mapper = vtkImageSliceMapper()
+        self._voi_mapper.SetInputData(vtk_img)
+        # Match current orientation and slice
+        self._voi_mapper.SetSliceNumber(self._current_slice)
+        if self._orientation == "axial":
+            self._voi_mapper.SetOrientationToZ()
+        elif self._orientation == "coronal":
+            self._voi_mapper.SetOrientationToY()
+        else:
+            self._voi_mapper.SetOrientationToX()
+
+        voi_prop = vtkImageProperty()
+        voi_prop.SetInterpolationTypeToNearest()
+
+        self._voi_slice = vtkImageSlice()
+        self._voi_slice.SetMapper(self._voi_mapper)
+        self._voi_slice.SetProperty(voi_prop)
+
+        self._vtk_renderer.AddViewProp(self._voi_slice)
         self._render()
 
     # ── Render helper ───────────────────────────────────────────────

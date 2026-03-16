@@ -115,3 +115,24 @@ class MPRPanel(QWidget):
         """Initialize VTK interactors on all viewers. Call after widget is shown."""
         for viewer in (self._axial, self._coronal, self._sagittal):
             viewer.start_interactor()
+
+    def clear_overlays(self) -> None:
+        """Remove all overlays from all viewers."""
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.clear_overlays()
+
+    def set_seed_overlay(self, seeds_dict: dict, spacing: list) -> None:
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.set_seed_overlay(seeds_dict, spacing)
+
+    def set_centerline_overlay(self, centerlines_dict: dict, spacing: list) -> None:
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.set_centerline_overlay(centerlines_dict, spacing)
+
+    def set_contour_overlay(self, contour_results_dict: dict) -> None:
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.set_contour_overlay(contour_results_dict)
+
+    def set_voi_overlay(self, voi_masks_dict: dict, spacing: list) -> None:
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.set_voi_overlay(voi_masks_dict, spacing)

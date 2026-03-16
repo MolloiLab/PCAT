@@ -42,6 +42,11 @@ class PipelineWorker(QThread):
     pipeline_failed = Signal(str)
     progress_message = Signal(str)
 
+    seeds_ready = Signal(object)
+    centerlines_ready = Signal(object)
+    contours_ready = Signal(object)
+    voi_masks_ready = Signal(object)
+
     def __init__(
         self,
         session: PatientSession,
@@ -148,6 +153,19 @@ class PipelineWorker(QThread):
                 self._seeds_path = seeds_json
                 self.session.set_stage_status("seeds", "complete")
                 self.stage_completed.emit("seeds", time.time() - t0)
+
+                import json
+                seeds_data_raw = json.loads(self._seeds_path.read_text())
+                seed_points = {}
+                for v in self.vessels:
+                    for key in (v, v.upper(), v.replace("x", "X")):
+                        if key in seeds_data_raw and seeds_data_raw[key].get("ostium_ijk"):
+                            ijk = seeds_data_raw[key]["ostium_ijk"]
+                            if all(c is not None for c in ijk):
+                                seed_points[v] = ijk
+                                break
+                if seed_points:
+                    self.seeds_ready.emit(seed_points)
             except Exception as exc:
                 self._handle_stage_failure("seeds", exc)
                 self.pipeline_failed.emit(f"Seeds generation failed: {exc}")
@@ -267,6 +285,9 @@ class PipelineWorker(QThread):
 
                 self.session.set_stage_status("centerlines", "complete")
                 self.stage_completed.emit("centerlines", time.time() - t0)
+
+                cl_viz = {v: d["proximal"] for v, d in self.vessel_centerlines.items()}
+                self.centerlines_ready.emit(cl_viz)
             except Exception as exc:
                 self._handle_stage_failure("centerlines", exc)
                 self.pipeline_failed.emit(
@@ -306,6 +327,8 @@ class PipelineWorker(QThread):
             self.session.set_stage_status("contours", "complete")
             self.stage_completed.emit("contours", time.time() - t0)
 
+            self.contours_ready.emit(dict(self.vessel_contour_results))
+
         # ── Stage: pcat_voi ──────────────────────────────────────────
         if not self._should_skip("pcat_voi"):
             t0 = time.time()
@@ -335,6 +358,8 @@ class PipelineWorker(QThread):
 
             self.session.set_stage_status("pcat_voi", "complete")
             self.stage_completed.emit("pcat_voi", time.time() - t0)
+
+            self.voi_masks_ready.emit(dict(self.vessel_voi_masks))
 
         # ── Stage: statistics ────────────────────────────────────────
         if not self._should_skip("statistics"):

@@ -21,11 +21,12 @@ from vtk.util.numpy_support import numpy_to_vtk
 from typing import Optional
 
 
+# Horos-style vessel colors (from pipeline/visualize.py)
 _VESSEL_COLORS_RGB = {
-    "LAD": (255, 69, 58),
-    "LCx": (10, 132, 255),
-    "LCX": (10, 132, 255),
-    "RCA": (48, 209, 88),
+    "LAD": (232, 83, 58),    # #E8533A — red-orange
+    "LCx": (74, 144, 217),   # #4A90D9 — blue
+    "LCX": (74, 144, 217),
+    "RCA": (46, 204, 113),   # #2ECC71 — green
 }
 
 
@@ -497,65 +498,65 @@ class VTKSliceView(QWidget):
         self._render()
 
     def set_seed_overlay(self, seeds_dict: dict, spacing: list) -> None:
-        """Show colored spheres at seed/ostium points."""
+        """Show seed/ostium points as colored spheres with white edge halo.
+
+        Horos style: filled vessel-colored sphere + slightly larger white
+        wireframe sphere behind it for contrast (like white edgecolors).
+        """
         sx, sy, sz = spacing[2], spacing[1], spacing[0]
 
-        points = vtkPoints()
-        colors = vtkUnsignedCharArray()
-        colors.SetNumberOfComponents(3)
-        colors.SetName("Colors")
-
         for vessel, ijk in seeds_dict.items():
-            z, y, x = ijk[0], ijk[1], ijk[2]
-            points.InsertNextPoint(x * sx, y * sy, z * sz)
-            rgb = _VESSEL_COLORS_RGB.get(vessel, (255, 255, 255))
-            colors.InsertNextTuple3(*rgb)
+            z, y, x = float(ijk[0]), float(ijk[1]), float(ijk[2])
+            pos = (x * sx, y * sy, z * sz)
+            rgb = _VESSEL_COLORS_RGB.get(vessel, (232, 83, 58))
 
-        if points.GetNumberOfPoints() == 0:
-            return
+            # White outline sphere (slightly larger, behind)
+            sphere_out = vtkSphereSource()
+            sphere_out.SetCenter(*pos)
+            sphere_out.SetRadius(2.2)
+            sphere_out.SetPhiResolution(16)
+            sphere_out.SetThetaResolution(16)
+            mapper_out = vtkPolyDataMapper()
+            mapper_out.SetInputConnection(sphere_out.GetOutputPort())
+            actor_out = vtkActor()
+            actor_out.SetMapper(mapper_out)
+            actor_out.GetProperty().SetColor(1.0, 1.0, 1.0)
+            actor_out.GetProperty().SetOpacity(0.9)
+            actor_out.GetProperty().SetRepresentationToWireframe()
+            actor_out.GetProperty().SetLineWidth(1.5)
+            self._vtk_renderer.AddActor(actor_out)
+            self._overlay_actors.append(actor_out)
 
-        pd = vtkPolyData()
-        pd.SetPoints(points)
-        pd.GetPointData().SetScalars(colors)
+            # Colored fill sphere
+            sphere_in = vtkSphereSource()
+            sphere_in.SetCenter(*pos)
+            sphere_in.SetRadius(1.8)
+            sphere_in.SetPhiResolution(16)
+            sphere_in.SetThetaResolution(16)
+            mapper_in = vtkPolyDataMapper()
+            mapper_in.SetInputConnection(sphere_in.GetOutputPort())
+            actor_in = vtkActor()
+            actor_in.SetMapper(mapper_in)
+            actor_in.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+            actor_in.GetProperty().SetOpacity(0.95)
+            self._vtk_renderer.AddActor(actor_in)
+            self._overlay_actors.append(actor_in)
 
-        # Create vertex cells so glyph has something to work with
-        verts = vtkCellArray()
-        for i in range(points.GetNumberOfPoints()):
-            verts.InsertNextCell(1)
-            verts.InsertCellPoint(i)
-        pd.SetVerts(verts)
-
-        sphere = vtkSphereSource()
-        sphere.SetRadius(2.0)  # 2mm radius
-        sphere.SetPhiResolution(12)
-        sphere.SetThetaResolution(12)
-
-        glyph = vtkGlyph3D()
-        glyph.SetInputData(pd)
-        glyph.SetSourceConnection(sphere.GetOutputPort())
-        glyph.SetColorModeToColorByScalar()
-        glyph.ScalingOff()
-        glyph.Update()
-
-        mapper = vtkPolyDataMapper()
-        mapper.SetInputConnection(glyph.GetOutputPort())
-
-        actor = vtkActor()
-        actor.SetMapper(mapper)
-
-        self._vtk_renderer.AddActor(actor)
-        self._overlay_actors.append(actor)
         self._render()
 
     def set_centerline_overlay(self, centerlines_dict: dict, spacing: list) -> None:
-        """Show colored polylines for vessel centerlines."""
+        """Show vessel centerlines as colored lines with white outline.
+
+        Horos style: vessel-colored line (lw 1.5, alpha 0.8) over a
+        slightly wider white line for contrast against any background.
+        """
         sx, sy, sz = spacing[2], spacing[1], spacing[0]
 
         for vessel, cl_ijk in centerlines_dict.items():
             if cl_ijk is None or len(cl_ijk) < 2:
                 continue
 
-            rgb = _VESSEL_COLORS_RGB.get(vessel, (255, 255, 255))
+            rgb = _VESSEL_COLORS_RGB.get(vessel, (232, 83, 58))
 
             points = vtkPoints()
             for pt in cl_ijk:
@@ -571,29 +572,42 @@ class VTKSliceView(QWidget):
             pd.SetPoints(points)
             pd.SetLines(lines)
 
-            mapper = vtkPolyDataMapper()
-            mapper.SetInputData(pd)
+            # White outline (wider, behind)
+            mapper_bg = vtkPolyDataMapper()
+            mapper_bg.SetInputData(pd)
+            actor_bg = vtkActor()
+            actor_bg.SetMapper(mapper_bg)
+            actor_bg.GetProperty().SetColor(1.0, 1.0, 1.0)
+            actor_bg.GetProperty().SetLineWidth(3.0)
+            actor_bg.GetProperty().SetOpacity(0.4)
+            self._vtk_renderer.AddActor(actor_bg)
+            self._overlay_actors.append(actor_bg)
 
-            actor = vtkActor()
-            actor.SetMapper(mapper)
-            actor.GetProperty().SetColor(rgb[0]/255, rgb[1]/255, rgb[2]/255)
-            actor.GetProperty().SetLineWidth(2.5)
-
-            self._vtk_renderer.AddActor(actor)
-            self._overlay_actors.append(actor)
+            # Vessel-colored line (on top)
+            mapper_fg = vtkPolyDataMapper()
+            mapper_fg.SetInputData(pd)
+            actor_fg = vtkActor()
+            actor_fg.SetMapper(mapper_fg)
+            actor_fg.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
+            actor_fg.GetProperty().SetLineWidth(1.5)
+            actor_fg.GetProperty().SetOpacity(0.85)
+            self._vtk_renderer.AddActor(actor_fg)
+            self._overlay_actors.append(actor_fg)
 
         self._render()
 
     def set_contour_overlay(self, contour_results_dict: dict) -> None:
-        """Show colored contour outlines around vessel walls."""
-        for vessel, cr in contour_results_dict.items():
-            rgb = _VESSEL_COLORS_RGB.get(vessel, (255, 255, 255))
+        """Show vessel wall contours in white (Horos style).
 
+        Horos convention: vessel lumen boundary in white (lw 2.0, alpha 0.85),
+        shown every ~2mm along the vessel for clean visualization.
+        """
+        for vessel, cr in contour_results_dict.items():
             points = vtkPoints()
             lines = vtkCellArray()
             pt_offset = 0
 
-            # Show every 5th contour to avoid visual clutter
+            # Show every ~2mm along vessel (use arclengths if available)
             step = max(1, len(cr.contours) // 20)
             for i in range(0, len(cr.contours), step):
                 contour = cr.contours[i]
@@ -609,7 +623,7 @@ class VTKSliceView(QWidget):
                 lines.InsertNextCell(n + 1)
                 for j in range(n):
                     lines.InsertCellPoint(pt_offset + j)
-                lines.InsertCellPoint(pt_offset)  # close the loop
+                lines.InsertCellPoint(pt_offset)
                 pt_offset += n
 
             if points.GetNumberOfPoints() == 0:
@@ -619,15 +633,14 @@ class VTKSliceView(QWidget):
             pd.SetPoints(points)
             pd.SetLines(lines)
 
+            # White vessel wall contour (Horos style)
             mapper = vtkPolyDataMapper()
             mapper.SetInputData(pd)
-
             actor = vtkActor()
             actor.SetMapper(mapper)
-            actor.GetProperty().SetColor(rgb[0]/255, rgb[1]/255, rgb[2]/255)
-            actor.GetProperty().SetLineWidth(1.5)
-            actor.GetProperty().SetOpacity(0.7)
-
+            actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+            actor.GetProperty().SetLineWidth(1.8)
+            actor.GetProperty().SetOpacity(0.85)
             self._vtk_renderer.AddActor(actor)
             self._overlay_actors.append(actor)
 
@@ -650,12 +663,12 @@ class VTKSliceView(QWidget):
         if combined.max() == 0:
             return
 
-        # Build RGBA image (4 components)
+        # Build RGBA image (4 components) — subtle tint, Horos style
         rgba = np.zeros((nz, ny, nx, 4), dtype=np.uint8)
         color_map = {
-            1: (255, 69, 58, 80),    # LAD
-            2: (10, 132, 255, 80),   # LCx
-            3: (48, 209, 88, 80),    # RCA
+            1: (232, 83, 58, 40),    # LAD — red-orange, very subtle
+            2: (74, 144, 217, 40),   # LCx — blue, very subtle
+            3: (46, 204, 113, 40),   # RCA — green, very subtle
         }
         for vid, color in color_map.items():
             mask = combined == vid

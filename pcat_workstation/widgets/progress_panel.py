@@ -30,9 +30,9 @@ _STATUS_COLORS = {
 }
 
 _VESSEL_COLORS = {
-    "LAD": "#ff453a",
-    "LCx": "#0a84ff",
-    "RCA": "#30d158",
+    "LAD": "#E8533A",
+    "LCx": "#4A90D9",
+    "RCA": "#2ECC71",
 }
 
 

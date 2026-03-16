@@ -162,8 +162,9 @@ class VTKSliceView(QWidget):
         self._spacing: list = [1.0, 1.0, 1.0]
         self._shape: tuple = (0, 0, 0)  # (Z, Y, X) numpy ordering
         self._current_slice: int = 0
-        self._window: float = 1500.0
-        self._level: float = 300.0
+        from pcat_workstation.app.config import DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_LEVEL
+        self._window: float = float(DEFAULT_WINDOW_WIDTH)
+        self._level: float = float(DEFAULT_WINDOW_LEVEL)
         self._overlay_actors: list = []
         self._voi_slice = None
         self._voi_mapper = None

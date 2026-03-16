@@ -442,6 +442,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_progress_message(self, message: str) -> None:
         self.statusBar().showMessage(message)
+        self._progress_panel.set_progress_message(message)
 
     @Slot(str)
     def _on_vessel_changed(self, vessel: str) -> None:

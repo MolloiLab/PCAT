@@ -1,10 +1,12 @@
 """Pipeline progress panel for the right sidebar."""
 
+import time
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QProgressBar, QFrame, QGroupBox,
 )
-from PySide6.QtCore import Signal, Qt
+from PySide6.QtCore import Signal, Qt, QTimer
 from typing import Dict
 
 from pcat_workstation.app.config import PIPELINE_STAGES, STAGE_LABELS, VESSEL_CONFIGS
@@ -64,7 +66,7 @@ class _StageRow(QFrame):
         self.time_label.setStyleSheet(
             "color: #98989d; font-family: 'Menlo', 'Courier New', monospace; font-size: 11pt;"
         )
-        self.time_label.setFixedWidth(40)
+        self.time_label.setFixedWidth(55)
         layout.addWidget(self.time_label)
 
     def set_status(self, status: str, elapsed_seconds: float = 0) -> None:
@@ -73,20 +75,43 @@ class _StageRow(QFrame):
         self.icon_label.setText(icon)
         self.icon_label.setStyleSheet(f"color: {color}; font-size: 15pt;")
 
-        if status == "complete" and elapsed_seconds > 0:
-            if elapsed_seconds < 60:
-                self.time_label.setText(f"{int(elapsed_seconds)}s")
-            else:
-                mins = int(elapsed_seconds // 60)
-                secs = int(elapsed_seconds % 60)
-                self.time_label.setText(f"{mins}m{secs:02d}s")
-        elif status == "running":
-            self.time_label.setText("...")
+        if status == "running":
+            self._start_time = time.monotonic()
+            self._start_tick()
         else:
-            self.time_label.setText("")
+            self._stop_tick()
+            if status == "complete" and elapsed_seconds > 0:
+                self.time_label.setText(self._fmt_time(elapsed_seconds))
+            else:
+                self.time_label.setText("")
 
     def reset(self) -> None:
+        self._stop_tick()
         self.set_status("pending")
+
+    # ── live elapsed timer ──────────────────────────────────────
+
+    def _start_tick(self) -> None:
+        if not hasattr(self, "_tick_timer"):
+            self._tick_timer = QTimer(self)
+            self._tick_timer.timeout.connect(self._tick)
+        self._tick_timer.start(1000)
+        self._tick()  # immediate first update
+
+    def _stop_tick(self) -> None:
+        if hasattr(self, "_tick_timer"):
+            self._tick_timer.stop()
+
+    def _tick(self) -> None:
+        elapsed = time.monotonic() - self._start_time
+        self.time_label.setText(self._fmt_time(elapsed))
+
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        s = int(seconds)
+        if s < 60:
+            return f"{s}s"
+        return f"{s // 60}m{s % 60:02d}s"
 
 
 class ProgressPanel(QWidget):
@@ -159,6 +184,15 @@ class ProgressPanel(QWidget):
         self._progress_bar.setFormat("%v / %m stages")
         layout.addWidget(self._progress_bar)
 
+        # --- Live message area ---
+        self._message_label = QLabel("")
+        self._message_label.setWordWrap(True)
+        self._message_label.setStyleSheet(
+            "color: #98989d; font-size: 11pt; padding: 2px 4px;"
+        )
+        self._message_label.setVisible(False)
+        layout.addWidget(self._message_label)
+
         # --- Separator ---
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
@@ -194,9 +228,17 @@ class ProgressPanel(QWidget):
         if running:
             self._run_btn.setText("\u23F9  Running...")
             self._run_btn.setEnabled(False)
+            self._message_label.setVisible(True)
         else:
             self._run_btn.setText("\u25B6  Run All")
             self._run_btn.setEnabled(True)
+            self._message_label.setVisible(False)
+            self._message_label.setText("")
+
+    def set_progress_message(self, message: str) -> None:
+        """Show a live detail message (e.g. 'Running TotalSegmentator...')."""
+        self._message_label.setText(message)
+        self._message_label.setVisible(bool(message))
 
     def set_run_enabled(self, enabled: bool) -> None:
         """Enable or disable the run button."""

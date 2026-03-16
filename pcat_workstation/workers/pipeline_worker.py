@@ -330,17 +330,25 @@ class PipelineWorker(QThread):
 
             self.contours_ready.emit(dict(self.vessel_contour_results))
 
-            # Generate CPR images from contour data
-            for vessel, cr in self.vessel_contour_results.items():
+            # Generate CPR images using full Horos-equivalent pipeline
+            # (Bezier spline + Bishop frame + cubic sampling + slab MIP)
+            for vessel in self.vessel_contour_results:
+                if vessel not in self.vessel_centerlines:
+                    continue
                 try:
-                    from pipeline.visualize import _build_cpr_image_fast
-                    cpr_img = _build_cpr_image_fast(
-                        volume, np.array(spacing_mm),
-                        cr.positions_mm, cr.N_frame, cr.B_frame,
-                        n_rows=128, row_extent_mm=10.0, slab_mm=3.0,
+                    from pipeline.visualize import _compute_cpr_data
+                    cl_ijk = self.vessel_centerlines[vessel]["proximal"]
+                    cpr_vol, _, _, _, _, n_h, n_w = _compute_cpr_data(
+                        volume, cl_ijk, spacing_mm,
+                        slab_thickness_mm=3.0,
+                        width_mm=25.0,
+                        pixels_wide=512,
+                        pixels_high=256,
                     )
+                    # cpr_vol is (n_w, n_h); transpose to (rows, cols) for display
+                    cpr_img = cpr_vol.T
                     self.cpr_ready.emit(vessel, cpr_img)
-                    self._emit(f"  {vessel} CPR generated")
+                    self._emit(f"  {vessel} CPR generated ({n_w}x{n_h})")
                 except Exception as exc:
                     self._emit(f"  {vessel} CPR failed: {exc}")
 

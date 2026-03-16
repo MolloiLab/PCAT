@@ -27,7 +27,6 @@ DEFAULT_WINDOW_LEVEL = 200
 PIPELINE_STAGES = [
     "import",
     "seeds",
-    "vesselness",
     "centerlines",
     "contours",
     "pcat_voi",
@@ -37,7 +36,6 @@ PIPELINE_STAGES = [
 STAGE_LABELS = {
     "import": "Loading volume",
     "seeds": "Detecting seeds (TotalSegmentator)",
-    "vesselness": "Computing vesselness filter",
     "centerlines": "Extracting centerlines",
     "contours": "Extracting vessel contours",
     "pcat_voi": "Building PCAT VOI",

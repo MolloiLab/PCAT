@@ -167,6 +167,7 @@ class VTKSliceView(QWidget):
         self._window: float = float(DEFAULT_WINDOW_WIDTH)
         self._level: float = float(DEFAULT_WINDOW_LEVEL)
         self._overlay_actors: list = []
+        self._seed_actor_info: list = []  # [{"actors": [...], "world_pos": (cx, cy, cz)}]
         self._voi_slice = None
         self._voi_mapper = None
 
@@ -344,6 +345,7 @@ class VTKSliceView(QWidget):
             else:
                 self._voi_mapper.SetOrientationToX()
 
+        self._update_seed_visibility()
         self._update_header()
         self._render()
         self.slice_changed.emit(self._current_slice)
@@ -351,6 +353,31 @@ class VTKSliceView(QWidget):
     def get_slice(self) -> int:
         """Return current slice index."""
         return self._current_slice
+
+    def _update_seed_visibility(self) -> None:
+        """Show seed markers only when the current slice is within ±2 mm."""
+        if not self._seed_actor_info or self._volume is None:
+            return
+        sx, sy, sz = self._spacing[2], self._spacing[1], self._spacing[0]
+        # Current slice position in mm along the slicing axis
+        if self._orientation == "axial":
+            slice_mm = self._current_slice * sz
+        elif self._orientation == "coronal":
+            slice_mm = self._current_slice * sy
+        else:  # sagittal
+            slice_mm = self._current_slice * sx
+
+        for info in self._seed_actor_info:
+            cx, cy, cz = info["world_pos"]
+            if self._orientation == "axial":
+                seed_mm = cz
+            elif self._orientation == "coronal":
+                seed_mm = cy
+            else:
+                seed_mm = cx
+            visible = abs(seed_mm - slice_mm) <= 2.0
+            for actor in info["actors"]:
+                actor.SetVisibility(visible)
 
     def _update_header(self) -> None:
         label = self._ORIENTATION_LABELS[self._orientation]
@@ -491,6 +518,7 @@ class VTKSliceView(QWidget):
         for actor in self._overlay_actors:
             self._vtk_renderer.RemoveActor(actor)
         self._overlay_actors.clear()
+        self._seed_actor_info.clear()
         if self._voi_slice is not None:
             self._vtk_renderer.RemoveViewProp(self._voi_slice)
             self._voi_slice = None
@@ -514,6 +542,7 @@ class VTKSliceView(QWidget):
             z, y, x = float(ijk[0]), float(ijk[1]), float(ijk[2])
             cx, cy, cz = x * sx, y * sy, z * sz
             rgb = _VESSEL_COLORS_RGB.get(vessel, (232, 83, 58))
+            seed_actors = []  # collect actors for this seed
 
             # --- Build circle geometry in 3 planes ---
             appender = vtkAppendPolyData()
@@ -583,6 +612,7 @@ class VTKSliceView(QWidget):
             a1.GetProperty().SetOpacity(0.7)
             self._vtk_renderer.AddActor(a1)
             self._overlay_actors.append(a1)
+            seed_actors.append(a1)
 
             # White outline for stubs
             m1s = vtkPolyDataMapper()
@@ -594,6 +624,7 @@ class VTKSliceView(QWidget):
             a1s.GetProperty().SetOpacity(0.7)
             self._vtk_renderer.AddActor(a1s)
             self._overlay_actors.append(a1s)
+            seed_actors.append(a1s)
 
             # --- Layer 2: Vessel-colored filled circles ---
             m2 = vtkPolyDataMapper()
@@ -605,6 +636,7 @@ class VTKSliceView(QWidget):
             a2.GetProperty().SetOpacity(0.9)
             self._vtk_renderer.AddActor(a2)
             self._overlay_actors.append(a2)
+            seed_actors.append(a2)
 
             # Colored stubs on top
             m2s = vtkPolyDataMapper()
@@ -616,7 +648,14 @@ class VTKSliceView(QWidget):
             a2s.GetProperty().SetOpacity(0.95)
             self._vtk_renderer.AddActor(a2s)
             self._overlay_actors.append(a2s)
+            seed_actors.append(a2s)
 
+            self._seed_actor_info.append({
+                "actors": seed_actors,
+                "world_pos": (cx, cy, cz),
+            })
+
+        self._update_seed_visibility()
         self._render()
 
     def set_centerline_overlay(self, centerlines_dict: dict, spacing: list) -> None:

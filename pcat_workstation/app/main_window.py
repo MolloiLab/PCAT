@@ -152,6 +152,7 @@ class MainWindow(QMainWindow):
 
         # Progress panel
         self._progress_panel.run_clicked.connect(self._on_run_pipeline)
+        self._progress_panel.run_next_clicked.connect(self._on_run_next_step)
 
         # Toolbar
         self._toolbar.run_clicked.connect(self._on_run_pipeline)
@@ -232,6 +233,12 @@ class MainWindow(QMainWindow):
         # Re-enable import
         self._dicom_browser._import_btn.setEnabled(True)
 
+        # Clear stale overlays/state from previous patient
+        self._mpr_panel.clear_overlays()
+        self._mpr_panel.clear_cpr()
+        self._progress_panel.reset_stages()
+        self._progress_panel.clear_vessel_summary()
+
         # Mark import stage complete (must be on main thread for autosave)
         self._session.set_stage_status("import", "complete")
 
@@ -274,6 +281,7 @@ class MainWindow(QMainWindow):
 
         # Enable run
         self._progress_panel.set_run_enabled(True)
+        self._progress_panel.set_run_next_enabled(True)
         self._toolbar.set_run_enabled(True)
         self._progress_panel.set_stage_status("import", "complete")
 
@@ -317,6 +325,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Session not found")
             return
 
+        # Clear stale overlays from previous patient before loading new one
+        self._mpr_panel.clear_overlays()
+        self._mpr_panel.clear_cpr()
+        self._progress_panel.clear_vessel_summary()
+
         self._session = PatientSession.load(session_path)
 
         # Restore stage statuses in progress panel
@@ -357,6 +370,9 @@ class MainWindow(QMainWindow):
             self._central_stack.setCurrentIndex(0)  # Show viewer
 
         self._progress_panel.set_run_enabled(True)
+        self._progress_panel.set_run_next_enabled(
+            self._session.get_resume_stage() is not None
+        )
         self._toolbar.set_run_enabled(True)
 
         self.statusBar().showMessage(f"Resumed: {self._session.patient_id}")
@@ -375,7 +391,8 @@ class MainWindow(QMainWindow):
         # If all stages are "complete" but results are missing/empty,
         # or if user explicitly re-runs, reset and start fresh.
         resume_from = self._session.get_resume_stage()
-        if resume_from is None:
+        full_rerun = resume_from is None
+        if full_rerun:
             # All stages complete — force full re-run
             for stage in self._session.stage_status:
                 if stage != "import":
@@ -388,27 +405,57 @@ class MainWindow(QMainWindow):
             session=self._session,
             resume_from=resume_from,
         )
-
-        # Connect signals
-        self._pipeline_worker.stage_started.connect(self._on_stage_started)
-        self._pipeline_worker.stage_completed.connect(self._on_stage_completed)
-        self._pipeline_worker.stage_failed.connect(self._on_stage_failed)
-        self._pipeline_worker.pipeline_completed.connect(self._on_pipeline_completed)
-        self._pipeline_worker.pipeline_failed.connect(self._on_pipeline_failed)
-        self._pipeline_worker.progress_message.connect(self._on_progress_message)
-        self._pipeline_worker.seeds_ready.connect(self._on_seeds_ready)
-        self._pipeline_worker.centerlines_ready.connect(self._on_centerlines_ready)
-        self._pipeline_worker.contours_ready.connect(self._on_contours_ready)
-        self._pipeline_worker.voi_masks_ready.connect(self._on_voi_masks_ready)
-        self._pipeline_worker.cpr_ready.connect(self._on_cpr_ready)
+        self._connect_pipeline_signals(self._pipeline_worker)
 
         self._progress_panel.set_running(True)
         self._toolbar.set_run_enabled(False)
         self._central_stack.setCurrentIndex(0)  # Show viewer during pipeline
 
-        self._mpr_panel.clear_overlays()
-        self._mpr_panel.clear_cpr()
+        if full_rerun:
+            self._mpr_panel.clear_overlays()
+            self._mpr_panel.clear_cpr()
         self._pipeline_worker.start()
+
+    @Slot()
+    def _on_run_next_step(self) -> None:
+        """Run only the next pending pipeline stage."""
+        if self._session is None:
+            return
+        if (
+            self._pipeline_worker is not None
+            and self._pipeline_worker.isRunning()
+        ):
+            return
+
+        next_stage = self._session.get_resume_stage()
+        if next_stage is None:
+            return
+
+        self._pipeline_worker = PipelineWorker(
+            session=self._session,
+            resume_from=next_stage,
+            stop_after=next_stage,
+        )
+        self._connect_pipeline_signals(self._pipeline_worker)
+
+        self._progress_panel.set_running(True)
+        self._toolbar.set_run_enabled(False)
+        self._central_stack.setCurrentIndex(0)
+        self._pipeline_worker.start()
+
+    def _connect_pipeline_signals(self, worker: PipelineWorker) -> None:
+        """Wire all PipelineWorker signals to MainWindow slots."""
+        worker.stage_started.connect(self._on_stage_started)
+        worker.stage_completed.connect(self._on_stage_completed)
+        worker.stage_failed.connect(self._on_stage_failed)
+        worker.pipeline_completed.connect(self._on_pipeline_completed)
+        worker.pipeline_failed.connect(self._on_pipeline_failed)
+        worker.progress_message.connect(self._on_progress_message)
+        worker.seeds_ready.connect(self._on_seeds_ready)
+        worker.centerlines_ready.connect(self._on_centerlines_ready)
+        worker.contours_ready.connect(self._on_contours_ready)
+        worker.voi_masks_ready.connect(self._on_voi_masks_ready)
+        worker.cpr_ready.connect(self._on_cpr_ready)
 
     @Slot(str)
     def _on_stage_started(self, stage: str) -> None:
@@ -428,6 +475,13 @@ class MainWindow(QMainWindow):
     def _on_pipeline_completed(self, results: dict) -> None:
         self._progress_panel.set_running(False)
         self._toolbar.set_run_enabled(True)
+
+        # Enable "Run Next Step" if stages remain pending
+        has_pending = (
+            self._session is not None
+            and self._session.get_resume_stage() is not None
+        )
+        self._progress_panel.set_run_next_enabled(has_pending)
 
         # Update results summary
         if self._session and self._session.vessel_stats:
@@ -456,6 +510,12 @@ class MainWindow(QMainWindow):
     def _on_pipeline_failed(self, error: str) -> None:
         self._progress_panel.set_running(False)
         self._toolbar.set_run_enabled(True)
+        # Enable "Run Next Step" if stages remain pending
+        has_pending = (
+            self._session is not None
+            and self._session.get_resume_stage() is not None
+        )
+        self._progress_panel.set_run_next_enabled(has_pending)
         self.statusBar().showMessage(f"Pipeline failed: {error}")
         QMessageBox.warning(self, "Pipeline Error", error)
         self._pipeline_worker = None

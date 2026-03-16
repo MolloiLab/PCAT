@@ -54,12 +54,14 @@ class PipelineWorker(QThread):
         session: PatientSession,
         vessels: Optional[List[str]] = None,
         resume_from: Optional[str] = None,
+        stop_after: Optional[str] = None,
         parent=None,
     ):
         super().__init__(parent)
         self.session = session
         self.vessels = vessels or list(_ALL_VESSELS)
         self.resume_from = resume_from
+        self.stop_after = stop_after
 
         # Intermediate results – accessible after completion
         self.vessel_centerlines: Dict[str, np.ndarray] = {}
@@ -176,21 +178,25 @@ class PipelineWorker(QThread):
             # Locate existing seeds file for later stages
             self._seeds_path = session_dir / f"{prefix}_seeds.json"
 
-        # ── Stage: vesselness ────────────────────────────────────────
-        # In auto mode the seed_editor produces an NPZ with centerlines;
-        # we load those rather than running a separate vesselness filter.
-        if not self._should_skip("vesselness"):
+        # ── stop_after check ──────────────────────────────────────────
+        if self.stop_after == "seeds" and self.session.stage_status.get("seeds") == "complete":
+            results["vessels"] = dict(self.vessel_stats)
+            self._emit("Stopped after seeds")
+            self.pipeline_completed.emit(results)
+            return
+
+        # ── Stage: centerlines ───────────────────────────────────────
+        if not self._should_skip("centerlines"):
             t0 = time.time()
-            self.stage_started.emit("vesselness")
-            self.session.set_stage_status("vesselness", "running")
+            self.stage_started.emit("centerlines")
+            self.session.set_stage_status("centerlines", "running")
             try:
+                # Load centerline NPZ (previously the vesselness stage)
                 self._emit("Loading centerlines from seed data...")
                 raw_dir = session_dir / "raw"
                 raw_dir.mkdir(parents=True, exist_ok=True)
                 npz_path = raw_dir / f"{prefix}_centerlines.npz"
-
                 if not npz_path.exists():
-                    # If no NPZ yet, generate seeds which will produce it
                     seeds_json = self._seeds_path or (
                         session_dir / f"{prefix}_seeds.json"
                     )
@@ -200,27 +206,8 @@ class PipelineWorker(QThread):
                             output_json=seeds_json,
                         )
                     self._seeds_path = seeds_json
-
                 self._centerlines_npz = npz_path if npz_path.exists() else None
-                self.session.set_stage_status("vesselness", "complete")
-                self.stage_completed.emit("vesselness", time.time() - t0)
-            except Exception as exc:
-                self._handle_stage_failure("vesselness", exc)
-                self.pipeline_failed.emit(
-                    f"Vesselness/centerline loading failed: {exc}"
-                )
-                return
-        else:
-            raw_dir = session_dir / "raw"
-            npz_path = raw_dir / f"{prefix}_centerlines.npz"
-            self._centerlines_npz = npz_path if npz_path.exists() else None
 
-        # ── Stage: centerlines ───────────────────────────────────────
-        if not self._should_skip("centerlines"):
-            t0 = time.time()
-            self.stage_started.emit("centerlines")
-            self.session.set_stage_status("centerlines", "running")
-            try:
                 seeds_data = load_seeds(self._seeds_path)
 
                 for vessel in self.vessels:
@@ -302,6 +289,18 @@ class PipelineWorker(QThread):
                     f"Centerline extraction failed: {exc}"
                 )
                 return
+        else:
+            # Skipping centerlines — still need NPZ path for later stages
+            raw_dir = session_dir / "raw"
+            npz_path = raw_dir / f"{prefix}_centerlines.npz"
+            self._centerlines_npz = npz_path if npz_path.exists() else None
+
+        # ── stop_after check ──────────────────────────────────────────
+        if self.stop_after == "centerlines" and self.session.stage_status.get("centerlines") == "complete":
+            results["vessels"] = dict(self.vessel_stats)
+            self._emit("Stopped after centerlines")
+            self.pipeline_completed.emit(results)
+            return
 
         # ── Stage: contours ──────────────────────────────────────────
         if not self._should_skip("contours"):
@@ -359,6 +358,13 @@ class PipelineWorker(QThread):
                 except Exception as exc:
                     self._emit(f"  {vessel} CPR failed: {exc}")
 
+        # ── stop_after check ──────────────────────────────────────────
+        if self.stop_after == "contours" and self.session.stage_status.get("contours") == "complete":
+            results["vessels"] = dict(self.vessel_stats)
+            self._emit("Stopped after contours")
+            self.pipeline_completed.emit(results)
+            return
+
         # ── Stage: pcat_voi ──────────────────────────────────────────
         if not self._should_skip("pcat_voi"):
             t0 = time.time()
@@ -390,6 +396,13 @@ class PipelineWorker(QThread):
             self.stage_completed.emit("pcat_voi", time.time() - t0)
 
             self.voi_masks_ready.emit(dict(self.vessel_voi_masks))
+
+        # ── stop_after check ──────────────────────────────────────────
+        if self.stop_after == "pcat_voi" and self.session.stage_status.get("pcat_voi") == "complete":
+            results["vessels"] = dict(self.vessel_stats)
+            self._emit("Stopped after pcat_voi")
+            self.pipeline_completed.emit(results)
+            return
 
         # ── Stage: statistics ────────────────────────────────────────
         if not self._should_skip("statistics"):

@@ -10,7 +10,6 @@ from typing import Optional, Dict, Any, List
 PIPELINE_STAGES = [
     "import",
     "seeds",
-    "vesselness",
     "centerlines",
     "contours",
     "pcat_voi",
@@ -207,6 +206,8 @@ class PatientSession(QObject):
             session.modified_at = datetime.fromisoformat(modified)
 
         session.stage_status.update(data.get("stage_status", {}))
+        # Backward compat: drop vesselness from old session.json files
+        session.stage_status.pop("vesselness", None)
         session.vessel_stats = data.get("vessel_stats", {})
 
         return session

@@ -118,6 +118,7 @@ class ProgressPanel(QWidget):
     """Right sidebar showing pipeline stage status and run controls."""
 
     run_clicked = Signal()
+    run_next_clicked = Signal()
     stage_action = Signal(str, str)  # (stage_name, action)
 
     def __init__(self, parent=None):
@@ -168,6 +169,33 @@ class ProgressPanel(QWidget):
         self._run_btn.setEnabled(False)
         self._run_btn.clicked.connect(self.run_clicked)
         layout.addWidget(self._run_btn)
+
+        # --- Run Next Step button ---
+        self._run_next_btn = QPushButton("\u25B7  Run Next Step")
+        self._run_next_btn.setFixedHeight(36)
+        self._run_next_btn.setCursor(Qt.PointingHandCursor)
+        self._run_next_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: transparent;
+                color: #0a84ff;
+                border: 1px solid #0a84ff;
+                border-radius: 4px;
+                font-size: 14pt;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #0a84ff22;
+            }
+            QPushButton:disabled {
+                border-color: #3a3a3c;
+                color: #636366;
+            }
+            """
+        )
+        self._run_next_btn.setEnabled(False)
+        self._run_next_btn.clicked.connect(self.run_next_clicked)
+        layout.addWidget(self._run_next_btn)
 
         # --- Stage rows ---
         for stage_key in PIPELINE_STAGES:
@@ -228,21 +256,47 @@ class ProgressPanel(QWidget):
         if running:
             self._run_btn.setText("\u23F9  Running...")
             self._run_btn.setEnabled(False)
+            self._run_next_btn.setEnabled(False)
             self._message_label.setVisible(True)
+            self._vessel_group.setTitle("Progress")
+            self.clear_vessel_summary()
         else:
             self._run_btn.setText("\u25B6  Run All")
             self._run_btn.setEnabled(True)
             self._message_label.setVisible(False)
             self._message_label.setText("")
+            self._vessel_group.setTitle("Vessel Summary")
 
     def set_progress_message(self, message: str) -> None:
         """Show a live detail message (e.g. 'Running TotalSegmentator...')."""
         self._message_label.setText(message)
         self._message_label.setVisible(bool(message))
+        # Also append to vessel group as live progress log when running
+        if message and self._vessel_group.title() == "Progress":
+            # Cap at 10 entries to prevent unbounded growth
+            while self._vessel_layout.count() >= 10:
+                item = self._vessel_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            lbl = QLabel(message)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color: #98989d; font-size: 11pt;")
+            self._vessel_layout.addWidget(lbl)
 
     def set_run_enabled(self, enabled: bool) -> None:
         """Enable or disable the run button."""
         self._run_btn.setEnabled(enabled)
+
+    def set_run_next_enabled(self, enabled: bool) -> None:
+        """Enable or disable the Run Next Step button."""
+        self._run_next_btn.setEnabled(enabled)
+
+    def clear_vessel_summary(self) -> None:
+        """Remove all items from the vessel summary section."""
+        while self._vessel_layout.count():
+            item = self._vessel_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
     def reset_stages(self) -> None:
         """Reset all stages to pending."""

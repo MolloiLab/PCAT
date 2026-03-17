@@ -357,8 +357,10 @@ class PipelineWorker(QThread):
                         pixels_wide=512,
                         pixels_high=256,
                     )
-                    # cpr_vol is (n_w, n_h); transpose to (rows, cols) for display
-                    cpr_img = cpr_vol.T
+                    # cpr_vol shape: (pixels_wide, pixels_high) = (arc-length, lateral)
+                    # Keep as-is: rows (axis 0) = arc-length, cols (axis 1) = lateral
+                    # This matches Horos convention: vertical = vessel length, horizontal = cross-section width
+                    cpr_img = cpr_vol
                     self.cpr_ready.emit(vessel, cpr_img, 25.0)  # row_extent_mm
                     # Emit Bishop frame used to generate CPR so cross-section
                     # sampling uses the same orientation as the CPR image

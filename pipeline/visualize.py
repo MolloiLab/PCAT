@@ -1555,8 +1555,10 @@ def _compute_cpr_data(
         # For each NaN, find nearest non-NaN and copy its value
         _, nearest_idx = distance_transform_edt(nan_mask, return_distances=True, return_indices=True)
         cpr_img[nan_mask] = cpr_img[tuple(nearest_idx[:, nan_mask])]
-    # Transpose → (pixels_wide, pixels_high) for indexed [col, row] access
-    # render functions transpose back to (n_rows, n_cols) for imshow
+    # Transpose → (pixels_wide, pixels_high) = (arc-length, lateral) for indexed access.
+    # Output: cpr_volume[i, j] where i = arc-length position, j = lateral offset.
+    # For display: rows (vertical) = arc-length, cols (horizontal) = lateral width.
+    # This matches Horos convention (proximal at top, distal at bottom).
     cpr_volume = cpr_img.T  # (pixels_wide, pixels_high)
 
     return cpr_volume, N_frame, B_frame, positions, s, pixels_high, pixels_wide

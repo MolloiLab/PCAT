@@ -68,6 +68,17 @@ class MainToolBar(QToolBar):
 
         self.addSeparator()
 
+        # --- Editing hints ---
+        self._hint_label = QLabel(
+            "Click: navigate | Drag seed: move | Enter: add | Backspace: delete | Ctrl+Z: undo"
+        )
+        self._hint_label.setStyleSheet(
+            "color: #636366; font-size: 10pt; padding: 0 8px; background: transparent;"
+        )
+        self.addWidget(self._hint_label)
+
+        self.addSeparator()
+
         # --- W/L presets ---
         wl_label = QLabel(" W/L: ")
         wl_label.setStyleSheet("color: #e5e5e7; font-size: 13pt;")

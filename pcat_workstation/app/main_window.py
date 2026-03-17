@@ -627,6 +627,28 @@ class MainWindow(QMainWindow):
         """Handle vessel selection change from toolbar."""
         self._current_vessel = vessel
         self._mpr_panel.set_cpr_vessel(vessel)
+
+        # Sync edit state's current vessel
+        if self._edit_state is not None:
+            self._edit_state.current_vessel = vessel
+
+        # Navigate slice views to vessel's ostium position
+        if self._edit_state is not None:
+            entry = self._edit_state.seeds.get(vessel)
+            if entry and entry.get("ostium"):
+                ijk = entry["ostium"]
+                meta = self._session.get_meta() if self._session else None
+                if meta:
+                    spacing = meta["spacing_mm"]
+                    # Convert voxel [z,y,x] to world mm [x,y,z] for VTK
+                    x_mm = float(ijk[2]) * spacing[2]
+                    y_mm = float(ijk[1]) * spacing[1]
+                    z_mm = float(ijk[0]) * spacing[0]
+                    # Navigate all viewers
+                    viewers = self._mpr_panel.get_viewers()
+                    for view in viewers.values():
+                        view.set_crosshair(x_mm, y_mm, z_mm)
+
         self.statusBar().showMessage(f"Vessel: {vessel}")
 
     @Slot(float, float)

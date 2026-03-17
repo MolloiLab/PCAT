@@ -46,6 +46,7 @@ class PipelineWorker(QThread):
     centerlines_ready = Signal(object)
     contours_ready = Signal(object)
     cpr_ready = Signal(str, object, float)  # (vessel_name, cpr_image_2d, row_extent_mm)
+    cpr_frame_ready = Signal(str, object)  # (vessel, dict with N_frame, B_frame, positions_mm, arclengths)
     radii_ready = Signal(object)  # {vessel: radii_mm_array}
     voi_masks_ready = Signal(object)
 
@@ -349,7 +350,7 @@ class PipelineWorker(QThread):
                 try:
                     from pipeline.visualize import _compute_cpr_data
                     cl_ijk = self.vessel_centerlines[vessel]["proximal"]
-                    cpr_vol, _, _, _, _, n_h, n_w = _compute_cpr_data(
+                    cpr_vol, N_frame, B_frame, positions, arclengths, n_h, n_w = _compute_cpr_data(
                         volume, cl_ijk, spacing_mm,
                         slab_thickness_mm=3.0,
                         width_mm=25.0,
@@ -359,6 +360,14 @@ class PipelineWorker(QThread):
                     # cpr_vol is (n_w, n_h); transpose to (rows, cols) for display
                     cpr_img = cpr_vol.T
                     self.cpr_ready.emit(vessel, cpr_img, 25.0)  # row_extent_mm
+                    # Emit Bishop frame used to generate CPR so cross-section
+                    # sampling uses the same orientation as the CPR image
+                    self.cpr_frame_ready.emit(vessel, {
+                        "N_frame": N_frame,         # (pixels_wide, 3)
+                        "B_frame": B_frame,         # (pixels_wide, 3)
+                        "positions_mm": positions,  # (pixels_wide, 3)
+                        "arclengths": arclengths,   # (pixels_wide,)
+                    })
                     self._emit(f"  {vessel} CPR generated ({n_w}x{n_h})")
                 except Exception as exc:
                     self._emit(f"  {vessel} CPR failed: {exc}")

@@ -455,6 +455,7 @@ class MainWindow(QMainWindow):
         worker.contours_ready.connect(self._on_contours_ready)
         worker.voi_masks_ready.connect(self._on_voi_masks_ready)
         worker.cpr_ready.connect(self._on_cpr_ready)
+        worker.cpr_frame_ready.connect(self._on_cpr_frame_ready)
 
     @Slot(str)
     def _on_stage_started(self, stage: str) -> None:
@@ -567,6 +568,10 @@ class MainWindow(QMainWindow):
                     pass
             existing_cpr[vessel] = cpr_image
             self._save_overlays(cpr_images=existing_cpr)
+
+    @Slot(str, object)
+    def _on_cpr_frame_ready(self, vessel: str, frame_data: dict) -> None:
+        self._mpr_panel.set_cpr_frame(vessel, frame_data)
 
     @Slot(str)
     def _on_vessel_changed(self, vessel: str) -> None:

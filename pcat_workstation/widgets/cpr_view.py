@@ -101,6 +101,10 @@ class _VesselData:
         "volume",
         "spacing",
         "row_extent_mm",
+        "cpr_N_frame",
+        "cpr_B_frame",
+        "cpr_positions_mm",
+        "cpr_arclengths",
     )
 
     def __init__(self) -> None:
@@ -109,6 +113,10 @@ class _VesselData:
         self.volume: Optional[np.ndarray] = None
         self.spacing: Optional[np.ndarray] = None
         self.row_extent_mm: Optional[float] = None
+        self.cpr_N_frame: Optional[np.ndarray] = None
+        self.cpr_B_frame: Optional[np.ndarray] = None
+        self.cpr_positions_mm: Optional[np.ndarray] = None
+        self.cpr_arclengths: Optional[np.ndarray] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -610,6 +618,21 @@ class CPRView(QWidget):
             self._refresh_cpr()
             self._refresh_cs()
 
+    def set_cpr_frame(self, vessel: str, frame_data: dict) -> None:
+        """Store the Bishop frame used to generate the CPR image.
+
+        This ensures cross-section sampling uses the same frame orientation
+        as the CPR image, avoiding rotational mismatch with the contour
+        extraction's independently computed Bishop frame.
+        """
+        vd = self._get_or_create_vdata(vessel)
+        vd.cpr_N_frame = frame_data["N_frame"]
+        vd.cpr_B_frame = frame_data["B_frame"]
+        vd.cpr_positions_mm = frame_data["positions_mm"]
+        vd.cpr_arclengths = frame_data["arclengths"]
+        # Invalidate cross-section cache for this vessel
+        self._cs_cache = {k: v for k, v in self._cs_cache.items() if k[0] != vessel}
+
     def set_vessel(self, vessel: str) -> None:
         """Switch which vessel is displayed."""
         if vessel == self._current_vessel:
@@ -670,6 +693,20 @@ class CPRView(QWidget):
 
     # ── Needle movement ──────────────────────────────────────────────
 
+    def _map_needle_to_frame_idx(self, needle_idx: int, vd: _VesselData) -> int:
+        """Map a needle index (0..n_positions-1) to a CPR frame index.
+
+        The CPR frame has ``pixels_wide`` entries (e.g. 512) while the
+        displayed image may have a different row count (e.g. 256).  We
+        linearly interpolate to find the matching frame index.
+        """
+        n_pos = self._n_positions()
+        n_frame = len(vd.cpr_N_frame)
+        if n_pos <= 1 or n_frame <= 1:
+            return min(needle_idx, n_frame - 1)
+        frac = needle_idx / (n_pos - 1)
+        return int(round(frac * (n_frame - 1)))
+
     def _on_needle_moved(self, idx: int) -> None:
         vd = self._current_vdata()
         if vd is None:
@@ -685,7 +722,11 @@ class CPRView(QWidget):
 
         # Emit patient coordinates in VTK order (x_mm, y_mm, z_mm)
         # positions_mm is in numpy order [z, y, x] so swap to VTK [x, y, z]
-        if vd.contour_result is not None and idx < len(vd.contour_result.positions_mm):
+        if vd.cpr_positions_mm is not None:
+            fi = self._map_needle_to_frame_idx(idx, vd)
+            pos = vd.cpr_positions_mm[fi]
+            self.needle_moved.emit(float(pos[2]), float(pos[1]), float(pos[0]))
+        elif vd.contour_result is not None and idx < len(vd.contour_result.positions_mm):
             pos = vd.contour_result.positions_mm[idx]
             self.needle_moved.emit(float(pos[2]), float(pos[1]), float(pos[0]))
 
@@ -741,9 +782,16 @@ class CPRView(QWidget):
         r_eq_mm = 0.0
         arc_mm = 0.0
 
-        if cr is not None and idx < len(cr.positions_mm):
-            r_eq_mm = float(cr.r_eq[idx]) if cr.r_eq is not None and idx < len(cr.r_eq) else 0.0
-            arc_mm = float(cr.arclengths[idx]) if cr.arclengths is not None and idx < len(cr.arclengths) else 0.0
+        # Prefer CPR frame arclengths (matches image orientation)
+        if vd.cpr_arclengths is not None:
+            fi = self._map_needle_to_frame_idx(idx, vd)
+            arc_mm = float(vd.cpr_arclengths[fi])
+        elif cr is not None and cr.arclengths is not None and idx < len(cr.arclengths):
+            arc_mm = float(cr.arclengths[idx])
+
+        # r_eq always comes from contour extraction (correct source)
+        if cr is not None and cr.r_eq is not None and idx < len(cr.r_eq):
+            r_eq_mm = float(cr.r_eq[idx])
 
         # Try to get cross-section from cache or compute
         cs_img = self._get_cross_section(idx)
@@ -752,23 +800,39 @@ class CPRView(QWidget):
     def _get_cross_section(self, idx: int) -> Optional[np.ndarray]:
         """Get cross-section image at given index, with caching."""
         vd = self._current_vdata()
-        if vd is None or vd.contour_result is None or vd.volume is None or vd.spacing is None:
+        if vd is None or vd.volume is None or vd.spacing is None:
             return None
 
-        cr = vd.contour_result
-        if idx >= len(cr.positions_mm):
+        # Need either CPR frame or contour extraction frame
+        has_cpr_frame = vd.cpr_N_frame is not None
+        has_contour = vd.contour_result is not None
+        if not has_cpr_frame and not has_contour:
             return None
 
         cache_key = (self._current_vessel, idx)
         if cache_key in self._cs_cache:
             return self._cs_cache[cache_key]
 
+        # Prefer CPR frame (matches CPR image orientation)
+        if has_cpr_frame:
+            fi = self._map_needle_to_frame_idx(idx, vd)
+            N_vec = vd.cpr_N_frame[fi]
+            B_vec = vd.cpr_B_frame[fi]
+            center = vd.cpr_positions_mm[fi]
+        else:
+            cr = vd.contour_result
+            if idx >= len(cr.positions_mm):
+                return None
+            N_vec = cr.N_frame[idx]
+            B_vec = cr.B_frame[idx]
+            center = cr.positions_mm[idx]
+
         cs_img = _sample_cross_section(
             volume=vd.volume,
             vox_size=vd.spacing,
-            center=cr.positions_mm[idx],
-            N_vec=cr.N_frame[idx],
-            B_vec=cr.B_frame[idx],
+            center=center,
+            N_vec=N_vec,
+            B_vec=B_vec,
             width_mm=self._CS_WIDTH_MM,
             n_cs=self._CS_RESOLUTION,
         )

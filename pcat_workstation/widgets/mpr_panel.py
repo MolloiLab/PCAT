@@ -195,6 +195,10 @@ class MPRPanel(QWidget):
         """Store a CPR image for a vessel in the CPR view."""
         self._cpr_view.set_cpr_data(vessel, cpr_image, row_extent_mm)
 
+    def set_cpr_frame(self, vessel: str, frame_data: dict) -> None:
+        """Pass CPR Bishop frame data to the CPR view for cross-section sampling."""
+        self._cpr_view.set_cpr_frame(vessel, frame_data)
+
     def set_cpr_vessel(self, vessel: str) -> None:
         """Switch which vessel's CPR is displayed."""
         self._cpr_view.set_vessel(vessel)

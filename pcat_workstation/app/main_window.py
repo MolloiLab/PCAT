@@ -140,6 +140,10 @@ class MainWindow(QMainWindow):
         run_action.triggered.connect(self._on_run_pipeline)
         pipeline_menu.addAction(run_action)
 
+        batch_action = QAction("Batch Processing...", self)
+        batch_action.triggered.connect(self._on_batch)
+        pipeline_menu.addAction(batch_action)
+
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
 
@@ -681,6 +685,22 @@ class MainWindow(QMainWindow):
             "Pericoronary Adipose Tissue Analysis\n"
             "Molloi Lab \u2014 UC Irvine",
         )
+
+    @Slot()
+    def _on_batch(self) -> None:
+        """Open or toggle the batch processing dock panel."""
+        from pcat_workstation.widgets.batch_panel import BatchPanel
+
+        if not hasattr(self, "_batch_panel") or self._batch_panel is None:
+            self._batch_panel = BatchPanel()
+            dock = QDockWidget("Batch Processing", self)
+            dock.setWidget(self._batch_panel)
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        else:
+            # Toggle visibility
+            parent_dock = self._batch_panel.parent()
+            if parent_dock:
+                parent_dock.setVisible(not parent_dock.isVisible())
 
     @Slot(str)
     def _on_mode_changed(self, mode: str) -> None:

@@ -19,6 +19,11 @@ VESSEL_CONFIGS = {
 # PCAT VOI geometry
 DEFAULT_PCAT_SCALE = 3.0  # x mean vessel radius
 
+# CRISP-CT VOI geometry (Oikonomou et al., Lancet 2018)
+VOI_MODE = "crisp"  # "crisp" (fixed 1mm+3mm) or "scaled" (pcat_scale × r_eq)
+CRISP_GAP_MM = 1.0   # gap from outer vessel wall
+CRISP_RING_MM = 3.0   # ring width
+
 # CT display defaults (vascular window for coronary artery work)
 DEFAULT_WINDOW_WIDTH = 800
 DEFAULT_WINDOW_LEVEL = 200

@@ -45,9 +45,11 @@ class PipelineWorker(QThread):
     seeds_ready = Signal(object)
     centerlines_ready = Signal(object)
     contours_ready = Signal(object)
-    cpr_ready = Signal(str, object)  # (vessel_name, cpr_image_2d)
+    cpr_ready = Signal(str, object, float)  # (vessel_name, cpr_image_2d, row_extent_mm)
+    cpr_frame_ready = Signal(str, object)  # (vessel, dict with N_frame, B_frame, positions_mm, arclengths)
     radii_ready = Signal(object)  # {vessel: radii_mm_array}
     voi_masks_ready = Signal(object)
+    analysis_data_ready = Signal(str, object)  # (vessel, dict with hu_values, distances_mm, mean_hu)
 
     def __init__(
         self,
@@ -114,6 +116,11 @@ class PipelineWorker(QThread):
                 extract_vessel_contours,
             )
             from pipeline.pcat_segment import compute_pcat_stats
+            from pcat_workstation.app.config import (
+                VOI_MODE,
+                CRISP_GAP_MM,
+                CRISP_RING_MM,
+            )
         except Exception as exc:
             self.pipeline_failed.emit(
                 f"Failed to import pipeline modules: {exc}"
@@ -344,16 +351,26 @@ class PipelineWorker(QThread):
                 try:
                     from pipeline.visualize import _compute_cpr_data
                     cl_ijk = self.vessel_centerlines[vessel]["proximal"]
-                    cpr_vol, _, _, _, _, n_h, n_w = _compute_cpr_data(
+                    cpr_vol, N_frame, B_frame, positions, arclengths, n_h, n_w = _compute_cpr_data(
                         volume, cl_ijk, spacing_mm,
                         slab_thickness_mm=3.0,
                         width_mm=25.0,
                         pixels_wide=512,
                         pixels_high=256,
                     )
-                    # cpr_vol is (n_w, n_h); transpose to (rows, cols) for display
-                    cpr_img = cpr_vol.T
-                    self.cpr_ready.emit(vessel, cpr_img)
+                    # cpr_vol shape: (pixels_wide, pixels_high) = (arc-length, lateral)
+                    # Keep as-is: rows (axis 0) = arc-length, cols (axis 1) = lateral
+                    # This matches Horos convention: vertical = vessel length, horizontal = cross-section width
+                    cpr_img = cpr_vol
+                    self.cpr_ready.emit(vessel, cpr_img, 25.0)  # row_extent_mm
+                    # Emit Bishop frame used to generate CPR so cross-section
+                    # sampling uses the same orientation as the CPR image
+                    self.cpr_frame_ready.emit(vessel, {
+                        "N_frame": N_frame,         # (pixels_wide, 3)
+                        "B_frame": B_frame,         # (pixels_wide, 3)
+                        "positions_mm": positions,  # (pixels_wide, 3)
+                        "arclengths": arclengths,   # (pixels_wide,)
+                    })
                     self._emit(f"  {vessel} CPR generated ({n_w}x{n_h})")
                 except Exception as exc:
                     self._emit(f"  {vessel} CPR failed: {exc}")
@@ -383,6 +400,9 @@ class PipelineWorker(QThread):
                         r_eq=cr.r_eq,
                         spacing_mm=spacing_mm,
                         pcat_scale=3.0,
+                        voi_mode=VOI_MODE,
+                        crisp_gap_mm=CRISP_GAP_MM,
+                        crisp_ring_mm=CRISP_RING_MM,
                     )
                     self.vessel_voi_masks[vessel] = voi_mask
                     self._emit(
@@ -420,6 +440,21 @@ class PipelineWorker(QThread):
                         f"  {vessel}: mean_HU={stats['hu_mean']:.1f}, "
                         f"fat_fraction={100*stats['fat_fraction']:.1f}%"
                     )
+
+                    # Compute radial profile and emit analysis data
+                    try:
+                        from pipeline.radial_profile import compute_radial_profile
+                        hu_values = volume[voi_mask].astype(np.float32)
+                        distances_mm, mean_hu = compute_radial_profile(
+                            volume, voi_mask, spacing_mm=spacing_mm,
+                        )
+                        self.analysis_data_ready.emit(vessel, {
+                            "hu_values": hu_values,
+                            "distances_mm": distances_mm,
+                            "mean_hu": mean_hu,
+                        })
+                    except Exception as prof_exc:
+                        self._emit(f"  {vessel} radial profile failed: {prof_exc}")
                 except Exception as exc:
                     self.stage_failed.emit(
                         "statistics", f"{vessel}: {exc}"

@@ -21,6 +21,8 @@ from pcat_workstation.workers.pipeline_worker import PipelineWorker
 from pcat_workstation.workers.dicom_loader_worker import DicomLoaderWorker
 from pcat_workstation.models.patient_session import PatientSession
 from pcat_workstation.models.dicom_index import DicomIndex
+from pcat_workstation.models.seed_edit_state import SeedEditState
+from pcat_workstation.controllers.seed_edit_controller import SeedEditController
 from pcat_workstation.app.config import DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_LEVEL
 
 
@@ -39,6 +41,8 @@ class MainWindow(QMainWindow):
         self._current_vessel: str = "LAD"
         self._pipeline_worker: Optional[PipelineWorker] = None
         self._loader_worker: Optional[DicomLoaderWorker] = None
+        self._edit_state: Optional[SeedEditState] = None
+        self._edit_controller: Optional[SeedEditController] = None
 
         # Build UI
         self._setup_central_widget()
@@ -117,6 +121,10 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self._toolbar.export_clicked)
         file_menu.addAction(export_action)
 
+        settings_action = QAction("Settings...", self)
+        settings_action.triggered.connect(self._on_settings)
+        file_menu.addAction(settings_action)
+
         file_menu.addSeparator()
 
         quit_action = QAction("Quit", self)
@@ -131,6 +139,10 @@ class MainWindow(QMainWindow):
         run_action.setShortcut(QKeySequence("Ctrl+R"))
         run_action.triggered.connect(self._on_run_pipeline)
         pipeline_menu.addAction(run_action)
+
+        batch_action = QAction("Batch Processing...", self)
+        batch_action.triggered.connect(self._on_batch)
+        pipeline_menu.addAction(batch_action)
 
         # Help menu
         help_menu = menu_bar.addMenu("&Help")
@@ -157,6 +169,12 @@ class MainWindow(QMainWindow):
         self._toolbar.run_clicked.connect(self._on_run_pipeline)
         self._toolbar.vessel_changed.connect(self._on_vessel_changed)
         self._toolbar.wl_preset_changed.connect(self._on_wl_changed)
+
+        # Toolbar — Export PDF report
+        self._toolbar.export_clicked.connect(self._on_export)
+
+        # Toolbar — View/Edit mode toggle
+        self._toolbar.mode_changed.connect(self._on_mode_changed)
 
         # MPR panel
         self._mpr_panel.window_level_changed.connect(self._on_viewer_wl_changed)
@@ -455,6 +473,8 @@ class MainWindow(QMainWindow):
         worker.contours_ready.connect(self._on_contours_ready)
         worker.voi_masks_ready.connect(self._on_voi_masks_ready)
         worker.cpr_ready.connect(self._on_cpr_ready)
+        worker.cpr_frame_ready.connect(self._on_cpr_frame_ready)
+        worker.analysis_data_ready.connect(self._on_analysis_data_ready)
 
     @Slot(str)
     def _on_stage_started(self, stage: str) -> None:
@@ -551,9 +571,9 @@ class MainWindow(QMainWindow):
             self._mpr_panel.set_voi_overlay(voi_masks_dict, meta["spacing_mm"])
         # VOI masks are large (~75MB); skip saving — centerlines+CPR suffice.
 
-    @Slot(str, object)
-    def _on_cpr_ready(self, vessel: str, cpr_image) -> None:
-        self._mpr_panel.set_cpr_data(vessel, cpr_image)
+    @Slot(str, object, float)
+    def _on_cpr_ready(self, vessel: str, cpr_image, row_extent_mm: float = 25.0) -> None:
+        self._mpr_panel.set_cpr_data(vessel, cpr_image, row_extent_mm)
         # Save CPR images incrementally
         overlay_path = self._session.session_dir / "overlays.npz" if self._session else None
         if overlay_path:
@@ -567,6 +587,19 @@ class MainWindow(QMainWindow):
                     pass
             existing_cpr[vessel] = cpr_image
             self._save_overlays(cpr_images=existing_cpr)
+
+    @Slot(str, object)
+    def _on_cpr_frame_ready(self, vessel: str, frame_data: dict) -> None:
+        self._mpr_panel.set_cpr_frame(vessel, frame_data)
+
+    @Slot(str, object)
+    def _on_analysis_data_ready(self, vessel: str, data: dict) -> None:
+        """Update the analysis dashboard with HU histogram and radial profile."""
+        self._analysis_dashboard.plot_histogram(data["hu_values"], vessel)
+        self._analysis_dashboard.plot_radial_profile(
+            data["distances_mm"], data["mean_hu"], vessel,
+        )
+        self._analysis_dashboard.set_collapsed(False)
 
     @Slot(str)
     def _on_vessel_changed(self, vessel: str) -> None:
@@ -598,6 +631,52 @@ class MainWindow(QMainWindow):
         self._load_recent_projects()
 
     @Slot()
+    def _on_export(self) -> None:
+        """Export PDF report."""
+        if self._session is None or not self._session.vessel_stats:
+            self.statusBar().showMessage("No results to export")
+            return
+
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export PDF Report",
+            f"{self._session.patient_id}_pcat_report.pdf",
+            "PDF Files (*.pdf)",
+        )
+        if not path:
+            return
+
+        from pcat_workstation.export.pdf_report import generate_report
+
+        # Collect CPR images from overlays
+        cpr_images = {}
+        overlay_path = self._session.session_dir / "overlays.npz"
+        if overlay_path.exists():
+            try:
+                data = np.load(str(overlay_path), allow_pickle=True)
+                if "cpr_images" in data:
+                    cpr_images = data["cpr_images"].item()
+            except Exception:
+                pass
+
+        generate_report(
+            output_path=Path(path),
+            patient_id=self._session.patient_id,
+            study_date=self._session.study_date,
+            vessel_stats=self._session.vessel_stats,
+            cpr_images=cpr_images,
+        )
+        self.statusBar().showMessage(f"Report exported: {path}")
+
+    @Slot()
+    def _on_settings(self) -> None:
+        from pcat_workstation.widgets.settings_dialog import SettingsDialog
+        dialog = SettingsDialog(self)
+        dialog.exec()
+
+    @Slot()
     def _on_about(self) -> None:
         QMessageBox.about(
             self,
@@ -606,6 +685,106 @@ class MainWindow(QMainWindow):
             "Pericoronary Adipose Tissue Analysis\n"
             "Molloi Lab \u2014 UC Irvine",
         )
+
+    @Slot()
+    def _on_batch(self) -> None:
+        """Open or toggle the batch processing dock panel."""
+        from pcat_workstation.widgets.batch_panel import BatchPanel
+
+        if not hasattr(self, "_batch_panel") or self._batch_panel is None:
+            self._batch_panel = BatchPanel()
+            dock = QDockWidget("Batch Processing", self)
+            dock.setWidget(self._batch_panel)
+            self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        else:
+            # Toggle visibility
+            parent_dock = self._batch_panel.parent()
+            if parent_dock:
+                parent_dock.setVisible(not parent_dock.isVisible())
+
+    @Slot(str)
+    def _on_mode_changed(self, mode: str) -> None:
+        """Handle View/Edit mode toggle from toolbar."""
+        if mode == "edit":
+            # Create SeedEditState from current pipeline seeds
+            meta = self._session.get_meta() if self._session else None
+            if meta is None:
+                self.statusBar().showMessage("Load a patient first")
+                self._toolbar.set_mode("view")
+                return
+
+            spacing = meta.get("spacing_mm", [1.0, 1.0, 1.0])
+            volume = self._session.get_volume() if self._session else None
+            if volume is None:
+                self.statusBar().showMessage("No volume loaded")
+                self._toolbar.set_mode("view")
+                return
+
+            # Get existing seeds from overlays
+            seeds_dict = {}
+            overlay_path = self._session.session_dir / "overlays.npz"
+            if overlay_path.exists():
+                try:
+                    data = np.load(str(overlay_path), allow_pickle=True)
+                    if "seeds" in data:
+                        seeds_dict = data["seeds"].item()
+                except Exception:
+                    pass
+
+            if not seeds_dict:
+                self.statusBar().showMessage("Run pipeline seeds stage first")
+                self._toolbar.set_mode("view")
+                return
+
+            self._edit_state = SeedEditState(
+                seeds_dict, spacing, volume.shape
+            )
+
+            viewers = self._mpr_panel.get_viewers()
+            self._edit_controller = SeedEditController(
+                state=self._edit_state,
+                views=list(viewers.values()),
+                spacing=spacing,
+            )
+
+            # Connect pipeline rerun request
+            self._edit_controller.request_pipeline_rerun.connect(self._on_edit_rerun)
+
+            self._mpr_panel.set_edit_controller(self._edit_controller)
+            self._mpr_panel.set_edit_mode(True)
+            self._mpr_panel.refresh_seed_overlay(self._edit_state)
+
+            self._central_stack.setCurrentIndex(0)  # Show viewer
+            self.statusBar().showMessage("Edit mode — click seeds to select, drag to move")
+
+        else:  # "view"
+            if self._edit_state is not None:
+                # Save seeds to session
+                self._edit_state.save_to_session(self._session)
+
+            self._mpr_panel.set_edit_mode(False)
+            self._edit_state = None
+            self._edit_controller = None
+            self.statusBar().showMessage("View mode")
+
+    @Slot()
+    def _on_edit_rerun(self) -> None:
+        """Re-run pipeline with updated seeds from edit mode."""
+        if self._edit_state is None or self._session is None:
+            return
+
+        # Save edited seeds
+        self._edit_state.save_to_session(self._session)
+
+        # Reset pipeline stages from centerlines onward
+        for stage in ["centerlines", "contours", "pcat_voi", "statistics"]:
+            self._session.set_stage_status(stage, "pending")
+
+        # Switch back to view mode
+        self._toolbar.set_mode("view")
+
+        # Re-run pipeline
+        self._on_run_pipeline()
 
     # ------------------------------------------------------------------ #
     #  Events

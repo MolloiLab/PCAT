@@ -191,13 +191,33 @@ class MPRPanel(QWidget):
                     vessel, cr, self._volume, self._spacing,
                 )
 
-    def set_cpr_data(self, vessel: str, cpr_image: np.ndarray) -> None:
+    def set_cpr_data(self, vessel: str, cpr_image: np.ndarray, row_extent_mm: float = 25.0) -> None:
         """Store a CPR image for a vessel in the CPR view."""
-        self._cpr_view.set_cpr_data(vessel, cpr_image)
+        self._cpr_view.set_cpr_data(vessel, cpr_image, row_extent_mm)
+
+    def set_cpr_frame(self, vessel: str, frame_data: dict) -> None:
+        """Pass CPR Bishop frame data to the CPR view for cross-section sampling."""
+        self._cpr_view.set_cpr_frame(vessel, frame_data)
 
     def set_cpr_vessel(self, vessel: str) -> None:
         """Switch which vessel's CPR is displayed."""
         self._cpr_view.set_vessel(vessel)
+
+    def set_edit_mode(self, enabled: bool) -> None:
+        """Toggle edit mode on all VTK slice views."""
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.set_edit_mode(enabled)
+
+    def set_edit_controller(self, controller) -> None:
+        """Set the edit controller on all VTK slice views."""
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.set_edit_controller(controller)
+
+    def refresh_seed_overlay(self, state) -> None:
+        """Rebuild seed overlays from SeedEditState."""
+        if self._spacing is not None:
+            for viewer in (self._axial, self._coronal, self._sagittal):
+                viewer.set_seed_overlay_extended(state, self._spacing)
 
     def clear_cpr(self) -> None:
         """Clear CPR data."""

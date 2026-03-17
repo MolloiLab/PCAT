@@ -199,7 +199,7 @@ class _CPRPanel(QWidget):
 
         if self._pixmap is None or self._pixmap.isNull():
             p.setPen(QColor("#888888"))
-            p.setFont(QFont("sans-serif", 11))
+            p.setFont(QFont("Helvetica", 11))
             p.drawText(self.rect(), Qt.AlignCenter, "CPR — run pipeline to generate")
             p.end()
             return
@@ -452,7 +452,7 @@ class _CrossSectionPanel(QWidget):
 
         if self._pixmap is None or self._pixmap.isNull():
             p.setPen(QColor("#888888"))
-            p.setFont(QFont("sans-serif", 9))
+            p.setFont(QFont("Helvetica", 9))
             p.drawText(self.rect(), Qt.AlignCenter, "Cross-section")
             p.end()
             return

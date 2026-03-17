@@ -1010,22 +1010,25 @@ class VTKSliceView(QWidget):
         cam.ParallelProjectionOn()
 
         if self._orientation == "axial":
-            # Camera above, looking down -Z
-            cam.SetPosition(cx, cy, cz + dist)
+            # Camera below (at feet), looking up +Z — ImageJ/radiology convention
+            # Screen right = +X (patient left), screen up = -Y (anterior)
+            cam.SetPosition(cx, cy, cz - dist)
             cam.SetFocalPoint(cx, cy, cz)
-            cam.SetViewUp(0, -1, 0)  # flip Y so row 0 = top (ImageJ)
+            cam.SetViewUp(0, -1, 0)  # anterior at top
             half_w, half_h = wx / 2, wy / 2
         elif self._orientation == "coronal":
-            # Camera in front, looking down -Y
-            cam.SetPosition(cx, cy + dist, cz)
+            # Camera behind (posterior), looking +Y — facing the patient
+            # Screen right = +X (patient left), screen up = +Z (superior)
+            cam.SetPosition(cx, cy - dist, cz)
             cam.SetFocalPoint(cx, cy, cz)
-            cam.SetViewUp(0, 0, 1)  # Z up (superior at top)
+            cam.SetViewUp(0, 0, 1)  # superior at top
             half_w, half_h = wx / 2, wz / 2
         else:  # sagittal
-            # Camera on right side, looking down -X
+            # Camera on right side, looking -X
+            # Screen right = +Y (posterior), screen up = +Z (superior)
             cam.SetPosition(cx + dist, cy, cz)
             cam.SetFocalPoint(cx, cy, cz)
-            cam.SetViewUp(0, 0, 1)  # Z up (superior at top)
+            cam.SetViewUp(0, 0, 1)  # superior at top
             half_w, half_h = wy / 2, wz / 2
 
         # Compute parallel scale to fill viewport (like ImageJ's "Fit")

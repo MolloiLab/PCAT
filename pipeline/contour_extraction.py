@@ -218,6 +218,9 @@ def build_contour_based_voi(
     r_eq: np.ndarray,
     spacing_mm: List[float],
     pcat_scale: float = 3.0,
+    voi_mode: str = "crisp",
+    crisp_gap_mm: float = 1.0,
+    crisp_ring_mm: float = 3.0,
 ) -> np.ndarray:
     """
     Build PCAT VOI mask from extracted vessel contours.
@@ -242,23 +245,39 @@ def build_contour_based_voi(
     spacing_mm : [sz, sy, sx]
         Voxel spacing in mm
     pcat_scale : float
-        VOI extends pcat_scale × r_eq from vessel wall (default 3.0)
+        VOI extends pcat_scale × r_eq from vessel wall (default 3.0).
+        Only used when voi_mode == "scaled".
+    voi_mode : str
+        "crisp" for fixed CRISP-CT geometry (gap + ring), or
+        "scaled" for pcat_scale × r_eq shell (default "crisp")
+    crisp_gap_mm : float
+        Gap from outer vessel wall in mm (default 1.0, CRISP-CT mode only)
+    crisp_ring_mm : float
+        Ring width in mm (default 3.0, CRISP-CT mode only)
     -------
     voi_mask : (Z, Y, X) bool
         PCAT VOI mask
     """
-    print(f"[contour] Building contour-based VOI with pcat_scale={pcat_scale}...")
+    if voi_mode == "crisp":
+        print(f"[contour] Building CRISP-CT VOI (gap={crisp_gap_mm}mm, "
+              f"ring={crisp_ring_mm}mm)...")
+    else:
+        print(f"[contour] Building contour-based VOI with pcat_scale={pcat_scale}...")
     vox_size = np.array(spacing_mm, dtype=np.float64)
     n_positions = len(centerline_mm)
     if n_positions == 0:
         return np.zeros(volume_shape, dtype=bool)
 
     # ── Step 1: Rasterize vessel interior into 3D mask ──────────────────
+    if voi_mode == "crisp":
+        max_outer_radius = crisp_gap_mm + crisp_ring_mm
+    else:
+        max_outer_radius = pcat_scale * float(np.mean(r_eq))
     mean_d_pcat = pcat_scale * float(np.mean(r_eq))
 
     # Compute overall bounding box
     centerline_vox = centerline_mm / vox_size[np.newaxis, :]
-    max_outer_mm = float(np.max(r_eq)) + mean_d_pcat + float(np.max(vox_size)) * 2
+    max_outer_mm = float(np.max(r_eq)) + max_outer_radius + float(np.max(vox_size)) * 2
     margin_vox = np.array([
         int(np.ceil(max_outer_mm / vox_size[0])) + 2,
         int(np.ceil(max_outer_mm / vox_size[1])) + 2,
@@ -336,7 +355,14 @@ def build_contour_based_voi(
     dist_from_wall = distance_transform_edt(~vessel_sub, sampling=spacing_mm)
 
     # ── Step 3: Build VOI as shell ────────────────────────────────────────
-    voi_sub = (dist_from_wall > 0) & (dist_from_wall <= mean_d_pcat) & ~vessel_sub
+    if voi_mode == "crisp":
+        voi_sub = ((dist_from_wall > crisp_gap_mm)
+                   & (dist_from_wall <= crisp_gap_mm + crisp_ring_mm)
+                   & ~vessel_sub)
+    else:
+        voi_sub = ((dist_from_wall > 0)
+                   & (dist_from_wall <= mean_d_pcat)
+                   & ~vessel_sub)
     voi_mask = np.zeros(volume_shape, dtype=bool)
     voi_mask[lo[0]:hi[0]+1, lo[1]:hi[1]+1, lo[2]:hi[2]+1] = voi_sub
 

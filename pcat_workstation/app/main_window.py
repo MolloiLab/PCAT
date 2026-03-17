@@ -162,6 +162,9 @@ class MainWindow(QMainWindow):
         self._toolbar.vessel_changed.connect(self._on_vessel_changed)
         self._toolbar.wl_preset_changed.connect(self._on_wl_changed)
 
+        # Toolbar — Export PDF report
+        self._toolbar.export_clicked.connect(self._on_export)
+
         # Toolbar — View/Edit mode toggle
         self._toolbar.mode_changed.connect(self._on_mode_changed)
 
@@ -618,6 +621,46 @@ class MainWindow(QMainWindow):
         """Remove a session from the recent projects list."""
         self._dicom_index.remove_recent(Path(session_dir))
         self._load_recent_projects()
+
+    @Slot()
+    def _on_export(self) -> None:
+        """Export PDF report."""
+        if self._session is None or not self._session.vessel_stats:
+            self.statusBar().showMessage("No results to export")
+            return
+
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export PDF Report",
+            f"{self._session.patient_id}_pcat_report.pdf",
+            "PDF Files (*.pdf)",
+        )
+        if not path:
+            return
+
+        from pcat_workstation.export.pdf_report import generate_report
+
+        # Collect CPR images from overlays
+        cpr_images = {}
+        overlay_path = self._session.session_dir / "overlays.npz"
+        if overlay_path.exists():
+            try:
+                data = np.load(str(overlay_path), allow_pickle=True)
+                if "cpr_images" in data:
+                    cpr_images = data["cpr_images"].item()
+            except Exception:
+                pass
+
+        generate_report(
+            output_path=Path(path),
+            patient_id=self._session.patient_id,
+            study_date=self._session.study_date,
+            vessel_stats=self._session.vessel_stats,
+            cpr_images=cpr_images,
+        )
+        self.statusBar().showMessage(f"Report exported: {path}")
 
     @Slot()
     def _on_about(self) -> None:

@@ -100,6 +100,7 @@ class _VesselData:
         "contour_result",
         "volume",
         "spacing",
+        "row_extent_mm",
     )
 
     def __init__(self) -> None:
@@ -107,6 +108,7 @@ class _VesselData:
         self.contour_result = None  # ContourResult or None
         self.volume: Optional[np.ndarray] = None
         self.spacing: Optional[np.ndarray] = None
+        self.row_extent_mm: Optional[float] = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -271,21 +273,8 @@ class _CPRPanel(QWidget):
         p.setPen(pen)
 
         # Wall boundaries: center +/- r_eq mapped to pixel column -> widget x
-        # CPR image columns span a cross-section width. We need to know the
-        # physical width encoded in the CPR. Estimate: the CPR image covers
-        # a range proportional to its pixel width. For a typical CPR generated
-        # at 0.3 mm/pixel, width_mm ~ cpr_w * 0.3. We'll estimate from the
-        # fact that the CPR center column is the centerline.
-        # Map r_eq (mm) to pixel offset from center. If total physical width
-        # is unknown, we approximate from the CPR image and the contour data.
-        # Use a heuristic: assume the CPR covers ~25mm each side of center.
-        # A better approach: the CPR width is stored with the data, but since
-        # it's not, we'll compute from the image width and a typical pixel size.
-        # For now, use the approach of mapping r_eq to fraction of image width.
-        # We assume the CPR's physical half-width = cpr_w * pixel_size / 2.
-        # Typical pixel size for CPR = 0.3mm, so half_width ≈ cpr_w * 0.15.
-        # But without explicit metadata, we'll use a reasonable default.
-        half_width_mm = max(cpr_w * 0.15, 10.0)  # heuristic
+        # half_width_mm is the physical half-width of the CPR lateral axis (row_extent_mm).
+        half_width_mm = vdata.row_extent_mm or max(cpr_w * 0.15, 10.0)  # fallback for legacy
 
         for i in range(n_pos - 1):
             y0 = self._y_for_index(i)
@@ -314,7 +303,7 @@ class _CPRPanel(QWidget):
 
         n_pos = len(r_eq)
         cpr_w = cpr_img.shape[1]
-        half_width_mm = max(cpr_w * 0.15, 10.0)
+        half_width_mm = vdata.row_extent_mm or max(cpr_w * 0.15, 10.0)  # fallback for legacy
 
         pen = QPen(QColor("#00cc00"), 1.0, Qt.DashLine)
         p.setPen(pen)
@@ -610,10 +599,11 @@ class CPRView(QWidget):
 
     # ── Public API (original, preserved) ─────────────────────────────
 
-    def set_cpr_data(self, vessel: str, cpr_image: np.ndarray) -> None:
+    def set_cpr_data(self, vessel: str, cpr_image: np.ndarray, row_extent_mm: float = 25.0) -> None:
         """Store a CPR image (float32 HU, rows x cols) for a vessel."""
         vd = self._get_or_create_vdata(vessel)
         vd.cpr_image = cpr_image
+        vd.row_extent_mm = row_extent_mm
         # Invalidate cross-section cache for this vessel
         self._cs_cache = {k: v for k, v in self._cs_cache.items() if k[0] != vessel}
         if vessel == self._current_vessel:

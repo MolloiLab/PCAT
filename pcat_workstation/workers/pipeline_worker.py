@@ -45,7 +45,7 @@ class PipelineWorker(QThread):
     seeds_ready = Signal(object)
     centerlines_ready = Signal(object)
     contours_ready = Signal(object)
-    cpr_ready = Signal(str, object)  # (vessel_name, cpr_image_2d)
+    cpr_ready = Signal(str, object, float)  # (vessel_name, cpr_image_2d, row_extent_mm)
     radii_ready = Signal(object)  # {vessel: radii_mm_array}
     voi_masks_ready = Signal(object)
 
@@ -114,6 +114,11 @@ class PipelineWorker(QThread):
                 extract_vessel_contours,
             )
             from pipeline.pcat_segment import compute_pcat_stats
+            from pcat_workstation.app.config import (
+                VOI_MODE,
+                CRISP_GAP_MM,
+                CRISP_RING_MM,
+            )
         except Exception as exc:
             self.pipeline_failed.emit(
                 f"Failed to import pipeline modules: {exc}"
@@ -353,7 +358,7 @@ class PipelineWorker(QThread):
                     )
                     # cpr_vol is (n_w, n_h); transpose to (rows, cols) for display
                     cpr_img = cpr_vol.T
-                    self.cpr_ready.emit(vessel, cpr_img)
+                    self.cpr_ready.emit(vessel, cpr_img, 25.0)  # row_extent_mm
                     self._emit(f"  {vessel} CPR generated ({n_w}x{n_h})")
                 except Exception as exc:
                     self._emit(f"  {vessel} CPR failed: {exc}")
@@ -383,6 +388,9 @@ class PipelineWorker(QThread):
                         r_eq=cr.r_eq,
                         spacing_mm=spacing_mm,
                         pcat_scale=3.0,
+                        voi_mode=VOI_MODE,
+                        crisp_gap_mm=CRISP_GAP_MM,
+                        crisp_ring_mm=CRISP_RING_MM,
                     )
                     self.vessel_voi_masks[vessel] = voi_mask
                     self._emit(

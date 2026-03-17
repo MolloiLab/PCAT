@@ -551,9 +551,9 @@ class MainWindow(QMainWindow):
             self._mpr_panel.set_voi_overlay(voi_masks_dict, meta["spacing_mm"])
         # VOI masks are large (~75MB); skip saving — centerlines+CPR suffice.
 
-    @Slot(str, object)
-    def _on_cpr_ready(self, vessel: str, cpr_image) -> None:
-        self._mpr_panel.set_cpr_data(vessel, cpr_image)
+    @Slot(str, object, float)
+    def _on_cpr_ready(self, vessel: str, cpr_image, row_extent_mm: float = 25.0) -> None:
+        self._mpr_panel.set_cpr_data(vessel, cpr_image, row_extent_mm)
         # Save CPR images incrementally
         overlay_path = self._session.session_dir / "overlays.npz" if self._session else None
         if overlay_path:

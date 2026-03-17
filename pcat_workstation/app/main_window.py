@@ -121,6 +121,10 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self._toolbar.export_clicked)
         file_menu.addAction(export_action)
 
+        settings_action = QAction("Settings...", self)
+        settings_action.triggered.connect(self._on_settings)
+        file_menu.addAction(settings_action)
+
         file_menu.addSeparator()
 
         quit_action = QAction("Quit", self)
@@ -661,6 +665,12 @@ class MainWindow(QMainWindow):
             cpr_images=cpr_images,
         )
         self.statusBar().showMessage(f"Report exported: {path}")
+
+    @Slot()
+    def _on_settings(self) -> None:
+        from pcat_workstation.widgets.settings_dialog import SettingsDialog
+        dialog = SettingsDialog(self)
+        dialog.exec()
 
     @Slot()
     def _on_about(self) -> None:

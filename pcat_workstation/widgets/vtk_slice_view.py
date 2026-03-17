@@ -50,6 +50,10 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
     right_release_event = Signal()
     left_click_event = Signal(int, int)   # (x_pixel, y_pixel)
     ctrl_scroll_event = Signal(int)      # +1 zoom in, -1 zoom out
+    left_press_event = Signal(int, int)     # (x_pixel, y_pixel)
+    left_drag_event = Signal(int, int)      # (x_pixel, y_pixel) - emitted after 3px deadzone
+    left_release_event = Signal(int, int)   # (x_pixel, y_pixel)
+    key_press_event = Signal(int, int)      # (key_code, modifiers)
 
     def __init__(self, parent=None, **kw):
         super().__init__(parent, **kw)
@@ -57,6 +61,10 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
         self._in_render = False
         self._right_dragging = False
         self._right_start = (0, 0)
+        self._left_pressed = False
+        self._left_start = (0, 0)
+        self._left_dragging = False  # True once 3px deadzone exceeded
+        self._DRAG_DEADZONE = 3  # pixels
 
     def request_render(self):
         """Schedule a VTK render after a short delay.
@@ -122,7 +130,10 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
             self._right_start = (ev.position().x(), ev.position().y())
             self.right_press_event.emit()
         elif ev.button() == _Qt.LeftButton:
-            self.left_click_event.emit(
+            self._left_pressed = True
+            self._left_start = (ev.position().x(), ev.position().y())
+            self._left_dragging = False
+            self.left_press_event.emit(
                 int(ev.position().x()), int(ev.position().y())
             )
         ev.accept()
@@ -132,6 +143,14 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
         if ev.button() == _Qt.RightButton:
             self._right_dragging = False
             self.right_release_event.emit()
+        elif ev.button() == _Qt.LeftButton:
+            x, y = int(ev.position().x()), int(ev.position().y())
+            if self._left_dragging:
+                self.left_release_event.emit(x, y)
+            else:
+                self.left_click_event.emit(x, y)
+            self._left_pressed = False
+            self._left_dragging = False
         ev.accept()
 
     def mouseMoveEvent(self, ev):
@@ -140,6 +159,20 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
             dx = int(x - self._right_start[0])
             dy = int(y - self._right_start[1])
             self.right_drag_event.emit(dx, dy)
+        elif self._left_pressed:
+            x, y = ev.position().x(), ev.position().y()
+            if not self._left_dragging:
+                dist = ((x - self._left_start[0]) ** 2
+                        + (y - self._left_start[1]) ** 2) ** 0.5
+                if dist > self._DRAG_DEADZONE:
+                    self._left_dragging = True
+            if self._left_dragging:
+                self.left_drag_event.emit(int(x), int(y))
+        ev.accept()
+
+    def keyPressEvent(self, ev):
+        from PySide6.QtCore import Qt as _Qt  # noqa: F811
+        self.key_press_event.emit(ev.key(), int(ev.modifiers()))
         ev.accept()
 
 

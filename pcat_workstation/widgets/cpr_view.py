@@ -545,6 +545,11 @@ class _CrossSectionPanel(QWidget):
             self._last_drag_pos = None
         super().mouseReleaseEvent(ev)
 
+    def mouseDoubleClickEvent(self, ev: QMouseEvent) -> None:
+        if ev.button() == Qt.LeftButton:
+            self._root.fullscreen_requested.emit(self._root)
+        ev.accept()
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Main CPRView widget

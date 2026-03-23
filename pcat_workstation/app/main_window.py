@@ -121,6 +121,10 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self._toolbar.export_clicked)
         file_menu.addAction(export_action)
 
+        dicom_export_action = QAction("Export DICOM...", self)
+        dicom_export_action.triggered.connect(self._on_export_dicom)
+        file_menu.addAction(dicom_export_action)
+
         file_menu.addSeparator()
 
         save_path_action = QAction("Save Path...", self)
@@ -722,6 +726,41 @@ class MainWindow(QMainWindow):
             cpr_images=cpr_images,
         )
         self.statusBar().showMessage(f"Report exported: {path}")
+
+    @Slot()
+    def _on_export_dicom(self) -> None:
+        """Export CPR images as DICOM Secondary Capture files."""
+        if self._session is None:
+            return
+        from PySide6.QtWidgets import QFileDialog
+
+        d = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if not d:
+            return
+
+        # Collect CPR images from overlays
+        cpr_images = {}
+        overlay_path = self._session.session_dir / "overlays.npz"
+        if overlay_path.exists():
+            try:
+                data = np.load(str(overlay_path), allow_pickle=True)
+                if "cpr_images" in data:
+                    cpr_images = data["cpr_images"].item()
+            except Exception:
+                pass
+        if not cpr_images:
+            self.statusBar().showMessage("No CPR images to export")
+            return
+
+        from pcat_workstation.export.dicom_export import export_cpr_series
+
+        paths = export_cpr_series(
+            cpr_images,
+            Path(d),
+            patient_id=self._session.patient_id,
+            study_date=self._session.study_date,
+        )
+        self.statusBar().showMessage(f"Exported {len(paths)} DICOM files to {d}")
 
     @Slot()
     def _on_save_path(self) -> None:

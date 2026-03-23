@@ -149,6 +149,12 @@ class _CPRPanel(QWidget):
         self._needle_idx: int = 0
         self._n_positions: int = 0
 
+        # A/B/C needle lines: B is the main needle, A and C are offset by interval
+        self._needle_interval: int = 20  # index spacing between A/B and B/C
+
+        # Line dragging state
+        self._dragging_line: Optional[str] = None  # "A", "B", or "C"
+
         # Right-drag W/L state
         self._right_dragging = False
         self._last_drag_pos: Optional[QPointF] = None
@@ -272,12 +278,24 @@ class _CPRPanel(QWidget):
         # PCAT boundary (green dashed)
         self._draw_pcat_boundary(p, rect)
 
-        # Needle line (cyan)
+        # Needle lines: A (yellow), B (cyan, main), C (yellow)
         if self._n_positions > 0:
-            ny = self._y_for_index(self._needle_idx)
-            pen_needle = QPen(QColor("#00ffcc"), 1.6)
-            p.setPen(pen_needle)
-            p.drawLine(QPointF(rect.left(), ny), QPointF(rect.right(), ny))
+            idx_a = max(0, self._needle_idx - self._needle_interval)
+            idx_b = self._needle_idx
+            idx_c = min(self._n_positions - 1, self._needle_idx + self._needle_interval)
+
+            for idx, color, label in [
+                (idx_a, QColor("#ffee00"), "A"),
+                (idx_b, QColor("#00ffcc"), "B"),
+                (idx_c, QColor("#ffee00"), "C"),
+            ]:
+                ny = self._y_for_index(idx)
+                pen = QPen(color, 1.6)
+                p.setPen(pen)
+                p.drawLine(QPointF(rect.left(), ny), QPointF(rect.right(), ny))
+                # Label at right edge
+                p.setFont(QFont("Helvetica", 9, QFont.Weight.Bold))
+                p.drawText(QPointF(rect.right() - 14, ny - 3), label)
 
         p.end()
 
@@ -380,15 +398,45 @@ class _CPRPanel(QWidget):
 
     def mousePressEvent(self, ev: QMouseEvent) -> None:
         if ev.button() == Qt.LeftButton and self._n_positions > 0:
-            idx = self._index_for_y(ev.position().y())
-            self.needle_index_changed.emit(idx)
+            y = ev.position().y()
+            # Check proximity to each line (within 8 pixels)
+            idx_a = max(0, self._needle_idx - self._needle_interval)
+            idx_b = self._needle_idx
+            idx_c = min(self._n_positions - 1, self._needle_idx + self._needle_interval)
+            lines = {
+                "A": self._y_for_index(idx_a),
+                "B": self._y_for_index(idx_b),
+                "C": self._y_for_index(idx_c),
+            }
+            closest = min(lines.items(), key=lambda kv: abs(kv[1] - y))
+            if abs(closest[1] - y) < 8:
+                self._dragging_line = closest[0]
+            else:
+                # Click not near any line - move B to click position
+                self._dragging_line = None
+                idx = self._index_for_y(y)
+                self.needle_index_changed.emit(idx)
         elif ev.button() == Qt.RightButton:
             self._right_dragging = True
             self._last_drag_pos = ev.position()
         super().mousePressEvent(ev)
 
     def mouseMoveEvent(self, ev: QMouseEvent) -> None:
-        if self._right_dragging and self._last_drag_pos is not None:
+        if self._dragging_line and ev.buttons() & Qt.LeftButton:
+            idx = self._index_for_y(ev.position().y())
+            if self._dragging_line == "B":
+                self.needle_index_changed.emit(idx)
+            elif self._dragging_line == "A":
+                new_interval = max(1, self._needle_idx - idx)
+                self._needle_interval = new_interval
+                self.update()
+                self._root._refresh_all_cs()
+            elif self._dragging_line == "C":
+                new_interval = max(1, idx - self._needle_idx)
+                self._needle_interval = new_interval
+                self.update()
+                self._root._refresh_all_cs()
+        elif self._right_dragging and self._last_drag_pos is not None:
             pos = ev.position()
             dx = pos.x() - self._last_drag_pos.x()
             dy = pos.y() - self._last_drag_pos.y()
@@ -397,12 +445,22 @@ class _CPRPanel(QWidget):
         super().mouseMoveEvent(ev)
 
     def mouseReleaseEvent(self, ev: QMouseEvent) -> None:
-        if ev.button() == Qt.RightButton:
+        if ev.button() == Qt.LeftButton:
+            self._dragging_line = None
+        elif ev.button() == Qt.RightButton:
             self._right_dragging = False
             self._last_drag_pos = None
         super().mouseReleaseEvent(ev)
 
     def wheelEvent(self, ev: QWheelEvent) -> None:
+        if ev.modifiers() & Qt.ControlModifier:
+            # Ctrl+scroll: change interval between A, B, C lines
+            delta = 2 if ev.angleDelta().y() > 0 else -2
+            self._needle_interval = max(1, self._needle_interval + delta)
+            self.update()
+            self._root._refresh_all_cs()
+            ev.accept()
+            return
         if ev.modifiers() & Qt.ShiftModifier:
             # Shift+scroll: rotate the CPR cutting plane
             current = self._root._rotation_slider.value()
@@ -445,13 +503,15 @@ class _CrossSectionPanel(QWidget):
 
     wl_drag = Signal(float, float)
 
-    def __init__(self, parent: "CPRView") -> None:
+    def __init__(self, parent: "CPRView", label: str = "B") -> None:
         super().__init__(parent)
         self._root = parent
+        self._label: str = label
         self._pixmap: Optional[QPixmap] = None
         self._lumen_contours: list = []  # list of (N,2) arrays in pixel coords
         self._r_eq_mm: float = 0.0
         self._arc_mm: float = 0.0
+        self._dist_from_b_mm: float = 0.0  # signed distance from B in mm
         self._width_mm: float = 15.0
         self._n_cs: int = 128
 
@@ -468,9 +528,11 @@ class _CrossSectionPanel(QWidget):
         level: float,
         r_eq_mm: float,
         arc_mm: float,
+        dist_from_b_mm: float = 0.0,
     ) -> None:
         self._r_eq_mm = r_eq_mm
         self._arc_mm = arc_mm
+        self._dist_from_b_mm = dist_from_b_mm
         if cs_img is not None:
             gray = _apply_wl(cs_img, window, level)
             qimg = _gray_to_qimage(gray)
@@ -556,13 +618,25 @@ class _CrossSectionPanel(QWidget):
             voi_r_widget = voi_r_pix * scale
             p.drawEllipse(QPointF(cx, cy), voi_r_widget, voi_r_widget)
 
+        # Label in top-left corner (A, B, or C)
+        label_color = QColor("#00ffcc") if self._label == "B" else QColor("#ffee00")
+        p.setPen(label_color)
+        p.setFont(QFont("Helvetica", 14, QFont.Weight.Bold))
+        p.drawText(QPointF(rect.left() + 6, rect.top() + 18), self._label)
+
         # Annotation text
         p.setPen(QColor("#e0e0e0"))
         p.setFont(QFont("monospace", 9))
         text_x = rect.left() + 4
         text_y = rect.bottom() - 6
-        p.drawText(QPointF(text_x, text_y - 14), f"arc: {self._arc_mm:.1f} mm")
-        p.drawText(QPointF(text_x, text_y), f"r_eq: {self._r_eq_mm:.2f} mm")
+        lines = []
+        lines.append(f"arc: {self._arc_mm:.1f} mm")
+        lines.append(f"r_eq: {self._r_eq_mm:.2f} mm")
+        if self._label != "B" and abs(self._dist_from_b_mm) > 0.01:
+            sign = "+" if self._dist_from_b_mm > 0 else ""
+            lines.append(f"{sign}{self._dist_from_b_mm:.1f} mm from B")
+        for i, line in enumerate(reversed(lines)):
+            p.drawText(QPointF(text_x, text_y - i * 14), line)
 
         p.end()
 
@@ -687,10 +761,21 @@ class CPRView(QWidget):
         )
 
         self._cpr_panel = _CPRPanel(self)
-        self._cs_panel = _CrossSectionPanel(self)
+
+        # Right side: 3 stacked cross-sections (A, B, C)
+        self._cs_container = QWidget()
+        cs_layout = QVBoxLayout(self._cs_container)
+        cs_layout.setContentsMargins(0, 0, 0, 0)
+        cs_layout.setSpacing(2)
+
+        self._cs_panels: list[_CrossSectionPanel] = []
+        for label in ("A", "B", "C"):
+            panel = _CrossSectionPanel(self, label=label)
+            self._cs_panels.append(panel)
+            cs_layout.addWidget(panel)
 
         self._splitter.addWidget(self._cpr_panel)
-        self._splitter.addWidget(self._cs_panel)
+        self._splitter.addWidget(self._cs_container)
         self._splitter.setStretchFactor(0, 7)
         self._splitter.setStretchFactor(1, 3)
 
@@ -699,7 +784,8 @@ class CPRView(QWidget):
     def _connect_signals(self) -> None:
         self._cpr_panel.needle_index_changed.connect(self._on_needle_moved)
         self._cpr_panel.wl_drag.connect(self._on_wl_drag)
-        self._cs_panel.wl_drag.connect(self._on_wl_drag)
+        for panel in self._cs_panels:
+            panel.wl_drag.connect(self._on_wl_drag)
 
     # ── Internal data access ─────────────────────────────────────────
 
@@ -774,7 +860,8 @@ class CPRView(QWidget):
         self._rotation_label.setText("0\u00b0")
         self._rotation_slider.blockSignals(False)
         self._cpr_panel.set_pixmap(None, 0)
-        self._cs_panel.clear()
+        for panel in self._cs_panels:
+            panel.clear()
 
     # ── Public API (new) ─────────────────────────────────────────────
 
@@ -940,31 +1027,59 @@ class CPRView(QWidget):
         self._cpr_panel.set_needle(self._needle_idx)
 
     def _refresh_cs(self) -> None:
-        """Recompute and display the cross-section at current needle index."""
+        """Backward-compatible alias for _refresh_all_cs."""
+        self._refresh_all_cs()
+
+    def _refresh_all_cs(self) -> None:
+        """Recompute and display cross-sections for all 3 panels (A, B, C)."""
         vd = self._current_vdata()
         if vd is None:
-            self._cs_panel.clear()
+            for panel in self._cs_panels:
+                panel.clear()
             return
 
-        idx = self._needle_idx
+        n_pos = self._n_positions()
+        if n_pos == 0:
+            for panel in self._cs_panels:
+                panel.clear()
+            return
+
+        interval = self._cpr_panel._needle_interval
+        idx_b = self._needle_idx
+        idx_a = max(0, idx_b - interval)
+        idx_c = min(n_pos - 1, idx_b + interval)
+
         cr = vd.contour_result
-        r_eq_mm = 0.0
-        arc_mm = 0.0
 
-        # Prefer CPR frame arclengths (matches image orientation)
+        # Get arc-length at B for distance calculations
+        arc_b = 0.0
         if vd.cpr_arclengths is not None:
-            fi = self._map_needle_to_frame_idx(idx, vd)
-            arc_mm = float(vd.cpr_arclengths[fi])
-        elif cr is not None and cr.arclengths is not None and idx < len(cr.arclengths):
-            arc_mm = float(cr.arclengths[idx])
+            fi_b = self._map_needle_to_frame_idx(idx_b, vd)
+            arc_b = float(vd.cpr_arclengths[fi_b])
+        elif cr is not None and cr.arclengths is not None and idx_b < len(cr.arclengths):
+            arc_b = float(cr.arclengths[idx_b])
 
-        # r_eq always comes from contour extraction (correct source)
-        if cr is not None and cr.r_eq is not None and idx < len(cr.r_eq):
-            r_eq_mm = float(cr.r_eq[idx])
+        for panel, idx in zip(self._cs_panels, [idx_a, idx_b, idx_c]):
+            r_eq_mm = 0.0
+            arc_mm = 0.0
 
-        # Try to get cross-section from cache or compute
-        cs_img = self._get_cross_section(idx)
-        self._cs_panel.set_cross_section(cs_img, self._window, self._level, r_eq_mm, arc_mm)
+            # Prefer CPR frame arclengths
+            if vd.cpr_arclengths is not None:
+                fi = self._map_needle_to_frame_idx(idx, vd)
+                arc_mm = float(vd.cpr_arclengths[fi])
+            elif cr is not None and cr.arclengths is not None and idx < len(cr.arclengths):
+                arc_mm = float(cr.arclengths[idx])
+
+            if cr is not None and cr.r_eq is not None and idx < len(cr.r_eq):
+                r_eq_mm = float(cr.r_eq[idx])
+
+            dist_from_b_mm = arc_mm - arc_b
+
+            cs_img = self._get_cross_section(idx)
+            panel.set_cross_section(
+                cs_img, self._window, self._level,
+                r_eq_mm, arc_mm, dist_from_b_mm,
+            )
 
     def _get_cross_section(self, idx: int) -> Optional[np.ndarray]:
         """Get cross-section image at given index, with caching."""

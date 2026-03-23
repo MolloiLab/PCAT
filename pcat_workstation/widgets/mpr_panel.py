@@ -22,9 +22,11 @@ class MPRPanel(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._linking = False
+        self._sync_zoom = True
         self._volume = None
         self._spacing = None
         self._contour_results: dict = {}  # vessel -> ContourResult
+        self._fullscreen_widget = None  # which widget is fullscreen, or None
         self._build_ui()
         self._connect_signals()
 
@@ -57,10 +59,29 @@ class MPRPanel(QWidget):
             viewer.crosshair_moved.connect(self._on_crosshair_moved)
             viewer.window_level_changed.connect(self._on_window_level_changed)
             viewer.slice_changed.connect(self._on_slice_changed)
+            viewer.zoom_changed.connect(self._on_zoom_changed)
 
         # CPR → MPR sync: when needle moves, jump MPR viewers to that 3D location
         self._cpr_view.needle_moved.connect(self._on_cpr_needle_moved)
         self._cpr_view.window_level_changed.connect(self._on_window_level_changed)
+
+        # Fullscreen toggle on double-click
+        for viewer in (self._axial, self._coronal, self._sagittal):
+            viewer.fullscreen_requested.connect(self.toggle_fullscreen)
+        self._cpr_view.fullscreen_requested.connect(self.toggle_fullscreen)
+
+    def toggle_fullscreen(self, widget) -> None:
+        """Toggle a view panel between fullscreen and normal grid layout."""
+        if self._fullscreen_widget is widget:
+            # Restore grid
+            for w in (self._axial, self._coronal, self._sagittal, self._cpr_view):
+                w.setVisible(True)
+            self._fullscreen_widget = None
+        else:
+            # Maximize this widget, hide others
+            for w in (self._axial, self._coronal, self._sagittal, self._cpr_view):
+                w.setVisible(w is widget)
+            self._fullscreen_widget = widget
 
     def _on_slice_changed(self, _index: int) -> None:
         """When any viewer scrolls, update crosshair lines on ALL viewers."""
@@ -107,6 +128,18 @@ class MPRPanel(QWidget):
         finally:
             self._linking = False
 
+    def _on_zoom_changed(self, scale: float) -> None:
+        if self._linking or not self._sync_zoom:
+            return
+        self._linking = True
+        try:
+            sender = self.sender()
+            for viewer in (self._axial, self._coronal, self._sagittal):
+                if viewer is not sender:
+                    viewer.set_parallel_scale(scale)
+        finally:
+            self._linking = False
+
     def _on_window_level_changed(self, window: float, level: float) -> None:
         if self._linking:
             return
@@ -123,6 +156,10 @@ class MPRPanel(QWidget):
             self._linking = False
 
     # ── Public API ───────────────────────────────────────────────────
+
+    def set_sync_zoom(self, enabled: bool) -> None:
+        """Enable or disable synchronized zoom across MPR views."""
+        self._sync_zoom = enabled
 
     def set_volume(self, volume: np.ndarray, spacing: list) -> None:
         """Pass volume and spacing to all three VTK viewers and CPR view."""

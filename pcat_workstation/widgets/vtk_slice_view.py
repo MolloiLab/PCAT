@@ -123,7 +123,8 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
         from PySide6.QtCore import Qt as _Qt
         # Use pixelDelta for trackpad gestures, angleDelta for mouse wheel
         delta_y = ev.pixelDelta().y() if ev.pixelDelta().y() != 0 else ev.angleDelta().y()
-        if ev.modifiers() & _Qt.ControlModifier:
+        # Ctrl+scroll OR Cmd+scroll = zoom (macOS pinch sends one of these)
+        if ev.modifiers() & (_Qt.ControlModifier | _Qt.MetaModifier):
             self.ctrl_scroll_event.emit(1 if delta_y > 0 else -1)
         elif delta_y > 0:
             self.scroll_event.emit(1)
@@ -132,14 +133,31 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
         ev.accept()
 
     def event(self, ev):
-        """Handle native gesture events (macOS trackpad pinch-to-zoom)."""
+        """Handle gesture events (macOS trackpad pinch-to-zoom)."""
         from PySide6.QtCore import QEvent
+        # Method 1: Native gesture (macOS Cocoa-level)
         if ev.type() == QEvent.NativeGesture:
-            from PySide6.QtGui import QNativeGestureEvent
-            if isinstance(ev, QNativeGestureEvent) and ev.gestureType() == Qt.ZoomNativeGesture:
-                delta = ev.value()
-                if abs(delta) > 0.001:
-                    self.ctrl_scroll_event.emit(1 if delta > 0 else -1)
+            try:
+                from PySide6.QtGui import QNativeGestureEvent
+                if isinstance(ev, QNativeGestureEvent):
+                    gt = ev.gestureType()
+                    if gt == Qt.ZoomNativeGesture:
+                        delta = ev.value()
+                        if abs(delta) > 0.001:
+                            self.ctrl_scroll_event.emit(1 if delta > 0 else -1)
+                        ev.accept()
+                        return True
+            except (ImportError, AttributeError):
+                pass
+        # Method 2: Qt gesture framework (QPinchGesture)
+        if ev.type() == QEvent.Gesture:
+            pinch = ev.gesture(Qt.PinchGesture)
+            if pinch is not None:
+                scale = pinch.scaleFactor()
+                if scale > 1.01:
+                    self.ctrl_scroll_event.emit(1)
+                elif scale < 0.99:
+                    self.ctrl_scroll_event.emit(-1)
                 ev.accept()
                 return True
         return super().event(ev)

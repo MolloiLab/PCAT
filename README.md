@@ -1,24 +1,12 @@
-# PCAT — Pericoronary Adipose Tissue Pipeline
+# PCAT Workstation
 
-Automatically measures fat around coronary arteries from a cardiac CT scan (CCTA). Outputs CPR images, HU histograms, radial profiles, and a per-vessel FAI summary.
+Pericoronary Adipose Tissue (PCAT) analysis workstation for cardiac CT (CCTA). Automatically segments coronary arteries, extracts vessel wall contours, and computes FAI (Fat Attenuation Index) statistics per vessel.
 
----
-
-## What does it do?
-
-1. Finds your coronary arteries (LAD, LCX, RCA) automatically via TotalSegmentator
-2. Lets you review and refine the coronary seed locations
-3. Computes Frangi vesselness filtering and extracts centerlines
-4. Extracts real vessel wall contours via polar-transform boundary detection
-5. Lets you correct contours in an interactive clinical editor
-6. Builds PCAT VOI from contours (3× vessel radius) and computes FAI
-7. Generates CPR images, histograms, and statistics
-
-> **FAI risk threshold: −70.1 HU.** Values above this (less negative) = higher cardiovascular inflammation risk (Oikonomou et al., Lancet 2018).
+> **FAI risk threshold: -70.1 HU.** Values above this (less negative) indicate higher cardiovascular inflammation risk (Oikonomou et al., Lancet 2018; CRISP-CT trial).
 
 ---
 
-## Setup (one time)
+## Installation
 
 ```bash
 git clone https://github.com/MolloiLab/PCAT.git
@@ -26,18 +14,240 @@ cd PCAT
 pip install -r requirements.txt
 ```
 
-**Optional (recommended on Apple Silicon):** Install PyTorch for GPU-accelerated Frangi filtering via Metal Performance Shaders. Without it, the pipeline falls back to CPU (scikit-image).
-
+**TotalSegmentator licence (required for auto seed detection):**
+Get a free academic licence at https://backend.totalsegmentator.com/license-academic/ and set:
 ```bash
-pip install torch
+export TOTALSEG_LICENSE=<your-key>
 ```
 
-Get a free TotalSegmentator research licence at:
-`https://backend.totalsegmentator.com/license-academic/`
+**Apple Silicon users:** PyTorch with MPS acceleration is auto-detected. Install with `pip install torch` for faster processing.
 
 ---
 
-## Standard Workflow (semi-automatic, one command)
+## Quick Start
+
+```bash
+cd PCAT
+python -m pcat_workstation.main
+```
+
+1. Click **Import DICOM** (left panel) and select a DICOM folder
+2. Click **Run** (right panel) to execute the next pipeline stage, or **Run All** (toolbar) for the full pipeline
+3. Seeds are auto-detected and editing is enabled immediately
+4. Review results in the analysis dashboard and export as PDF or DICOM
+
+---
+
+## User Interface
+
+### Layout
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ [LAD] [LCx] [RCA]  hints...  W/L:[preset]  ▶▶Run All  Export│  ← Toolbar
+├──────────┬──────────────────────────────────┬───────────────┤
+│          │  Axial        │  Coronal         │               │
+│  DICOM   │───────────────┼──────────────────│  Pipeline     │
+│  Browser │  Sagittal     │  CPR Viewer      │  Progress     │
+│          │               │  ┌──┐┌──┐┌──┐   │  Vessel       │
+│          │               │  │A ││B ││C │   │  Results      │
+│          │               │  └──┘└──┘└──┘   │               │
+├──────────┴──────────────────────────────────┴───────────────┤
+│  ▲ Analysis  [HU Histogram]  [Radial Profile]               │  ← Dashboard
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Toolbar
+
+| Control | Description |
+|---------|-------------|
+| **LAD / LCx / RCA** | Select vessel — navigates all views to its ostium (keyboard: 1/2/3) |
+| **Hint bar** | Shows editing shortcuts at a glance |
+| **Sync Zoom** | Toggle synchronized zoom across all 3 MPR views |
+| **W/L preset** | CT Vascular, Soft Tissue, Mediastinum, Lung, Bone |
+| **Run All** | Execute entire pipeline from scratch (Ctrl+Shift+R) |
+| **Export** | Generate PDF report |
+
+### MPR Views (2x2 Grid)
+
+The top-left, top-right, and bottom-left panels show **axial**, **coronal**, and **sagittal** slices following ImageJ/radiology convention:
+- **Scroll** to change slice
+- **Left-click** to navigate crosshair (synced across all views)
+- **Right-drag** to adjust window/level
+- **Ctrl+scroll** to zoom
+- **Double-click** any panel to toggle fullscreen
+
+### CPR Viewer (Bottom-Right)
+
+The Curved Planar Reformation viewer shows the straightened vessel with interactive controls:
+
+#### CPR Toolbar
+| Control | Description |
+|---------|-------------|
+| **Angle slider** (0-360) | Rotate the cutting plane around the vessel centerline |
+| **Straightened / Stretched** | Toggle display mode (Straightened fills panel; Stretched preserves 1:1 mm aspect ratio for accurate measurement) |
+| **Tool selector** | Navigate, W/L, Pan, Zoom, or Measure |
+
+#### CPR Interactions
+| Action | Effect |
+|--------|--------|
+| **Left-click** (Navigate tool) | Move needle to that position along the vessel |
+| **Drag yellow A/C line** | Adjust spacing between the 3 cross-section positions |
+| **Drag cyan B line** | Move main needle position |
+| **Ctrl+scroll** | Change A-B-C interval |
+| **Shift+scroll** | Rotate cutting plane by 5 degrees |
+| **Scroll** | Step needle along vessel |
+| **Right-drag** | Adjust window/level (always active) |
+
+#### Cross-Section Views (A, B, C)
+
+Three perpendicular cross-sections are displayed on the right side of the CPR panel:
+- **B** (cyan) — main needle position
+- **A** (yellow) — proximal to B
+- **C** (yellow) — distal to B
+
+Each shows: vessel lumen contour (white), VOI ring (yellow dashed), arc-length position, equivalent radius, and distance from B.
+
+#### Measurement Tool
+
+Select **Measure** from the tool dropdown:
+1. Click and drag on the CPR image to draw a measurement line
+2. Distance is displayed in mm (computed from the CPR's physical scale)
+3. Press **Delete** to remove the last measurement
+4. Measurements clear when switching vessels or rotating
+
+> In **Stretched** mode, distances are accurate in any direction. In **Straightened** mode, only horizontal (lateral) and vertical (arc-length) distances are accurate.
+
+---
+
+## Seed Editing
+
+Seeds are auto-detected when the pipeline runs and **edit mode activates automatically**. No toggle needed.
+
+| Action | Effect |
+|--------|--------|
+| **Left-click near seed** | Select it (yellow highlight) |
+| **Drag selected seed** | Move to new position |
+| **Enter** | Add waypoint at current crosshair position |
+| **Backspace / Delete** | Delete selected waypoint |
+| **Ctrl+Z** | Undo |
+| **Ctrl+Shift+Z / Ctrl+Y** | Redo |
+| **Left/Right arrows** | Cycle through vessels |
+
+Seed markers: **squares** = ostium (vessel origin), **circles** = waypoints.
+
+---
+
+## Pipeline Stages
+
+The pipeline runs in 6 stages. Use **Run** to execute one stage at a time, or **Run All** for the full sequence.
+
+| Stage | Description | Time |
+|-------|-------------|------|
+| **Import** | Load DICOM volume | < 1s |
+| **Seeds** | Auto-detect coronary ostia + waypoints via TotalSegmentator | 30-60s |
+| **Centerlines** | Extract + clip vessel centerlines, estimate radii | 2-5s |
+| **Contours** | Polar-transform vessel wall detection + CPR generation | 5-10s |
+| **PCAT VOI** | Build pericoronary VOI mask (CRISP-CT: 1mm gap + 3mm ring) | 3-5s |
+| **Statistics** | Compute FAI, fat fraction, HU histogram, radial profile | < 1s |
+
+### Seed Detection Algorithm
+
+TotalSegmentator segments the coronary arteries, then:
+1. **Aorta detection** — runs aorta segmentation for accurate ostium placement (cached after first run)
+2. **Vessel assignment** — assigns LAD/LCx/RCA by angular position relative to the aorta center (not by component size)
+3. **Ostium placement** — places ostium at the skeleton endpoint nearest the aorta surface
+4. **Waypoints** — 3 evenly spaced points along the proximal 45mm of each vessel
+
+### VOI Geometry
+
+Two modes (configurable in Settings):
+- **CRISP-CT** (default): 1mm gap from vessel wall + 3mm ring width (Oikonomou et al., Lancet 2018)
+- **Scaled**: VOI extends to `pcat_scale x r_eq` from the vessel wall (default 3x)
+
+---
+
+## Analysis Dashboard
+
+After the pipeline completes, the collapsible dashboard at the bottom shows:
+- **HU Histogram** — distribution of HU values within the PCAT VOI, with -70.1 HU risk threshold line
+- **Radial Profile** — mean HU vs. distance from vessel wall
+
+---
+
+## Export
+
+### PDF Report (File > Export...)
+Multi-page PDF with:
+- Summary page: patient info + per-vessel FAI table with risk classification
+- Per-vessel pages: CPR image, HU histogram, statistics box
+
+### DICOM Export (File > Export DICOM...)
+Exports CPR images as DICOM Secondary Capture objects:
+- 16-bit grayscale with patient metadata
+- All vessels grouped under one Study Instance UID for PACS compatibility
+
+### Save/Load Path (File > Save Path... / Load Path...)
+Export the current centerline path + seeds as a JSON file. Reload later to restore the exact vessel path without re-running the pipeline.
+
+---
+
+## Settings
+
+**File > Settings** opens the configuration dialog:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| VOI Mode | CRISP-CT | Fixed ring (CRISP-CT) or scaled (pcat_scale x r_eq) |
+| CRISP Gap | 1.0 mm | Distance from vessel wall to VOI inner boundary |
+| CRISP Ring | 3.0 mm | Width of the VOI ring |
+| Scaled Factor | 3.0x | VOI outer boundary as multiple of r_eq |
+| LAD/LCx Length | 40 mm | Proximal segment length for analysis |
+| RCA Length | 40 mm | Proximal segment length |
+| RCA Start | 10 mm | Skip first 10mm (aortic root) |
+| FAI Min/Max | -190 / -30 HU | Fat attenuation window |
+| Default W/L | 800 / 200 | CT vascular window preset |
+
+Settings are saved to `~/.pcat_workstation/config.json`.
+
+---
+
+## Batch Processing
+
+**Pipeline > Batch Processing** opens a dock panel for processing multiple patients:
+
+1. Click **Add Folders** to queue DICOM directories
+2. Set the output directory
+3. Click **Start Batch** — patients are processed sequentially
+4. Each patient shows status: pending, running, completed, or failed
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| **1 / 2 / 3** | Select LAD / LCx / RCA |
+| **Ctrl+R** | Run next pipeline stage |
+| **Ctrl+Shift+R** | Run all stages |
+| **Ctrl+O** | Import DICOM |
+| **Ctrl+E** | Export PDF |
+| **Ctrl+Q** | Quit |
+| **Ctrl+Z** | Undo (seed editing) |
+| **Ctrl+Shift+Z** | Redo (seed editing) |
+| **Enter** | Add waypoint |
+| **Backspace** | Delete selected waypoint |
+| **Delete** | Remove last measurement line |
+| **Scroll** | Change slice / move CPR needle |
+| **Ctrl+Scroll** | Zoom (MPR) / change A-B-C interval (CPR) |
+| **Shift+Scroll** | Rotate CPR cutting plane |
+| **Double-click** | Toggle fullscreen on any panel |
+
+---
+
+## CLI Pipeline (Advanced)
+
+The standalone CLI pipeline is still available for scripting and batch processing:
 
 ```bash
 python pipeline/run_pipeline.py \
@@ -47,206 +257,10 @@ python pipeline/run_pipeline.py \
     --auto-seeds
 ```
 
-The pipeline runs all stages automatically and pauses at each interactive review step:
-
-### Stage 1 — Auto seed detection (~30–60 s)
-
-TotalSegmentator segments the cardiac CT and detects the coronary artery ostia and distal endpoints. Seeds are saved to `seeds/`.
-
-### Stage 2 — Seed Reviewer
-
-A window opens showing 3 MPR planes (axial, coronal, sagittal) with the auto-detected seeds overlaid. If reviewed seeds already exist from a previous run, this step is skipped automatically.
-
-| Key / Action | Effect |
-|---|---|
-| `1` / `2` / `3` | Switch active vessel (LAD / LCX / RCA) |
-| Click near a seed | Drag to reposition |
-| Click elsewhere | Add new waypoint |
-| `d` | Delete the nearest waypoint |
-| `u` | Undo last action |
-| `r` | Reset current vessel to original seeds |
-| `c` | Clear warning messages |
-| `w` / `W` | Window width wider / narrower |
-| `l` / `L` | Window level brighter / darker |
-| `s` | **Save seeds (JSON) & continue pipeline** |
-| `q` | Quit without saving |
-| Scroll wheel | Change slice |
-
-### Stage 3 — Frangi vesselness filtering (~120 s)
-
-Computes a multi-scale Frangi vesselness filter on a ROI-cropped volume around the seed points. Uses MPS (Metal Performance Shaders) on Apple Silicon if PyTorch is installed, otherwise falls back to CPU via scikit-image.
-
-### Stage 4 — Per-vessel processing (~5 s total)
-
-For each vessel (LAD, LCX, RCA) the pipeline automatically:
-
-1. Extracts the centerline from the vesselness map via FMM/Dijkstra shortest path (with cubic-spline fallback if Frangi yields too few points)
-2. Clips to the proximal segment (LAD/LCX: 5–45 mm, RCA: 10–50 mm)
-3. Estimates vessel radii along the centerline
-4. Extracts vessel wall contours via polar-transform boundary detection using half-maximum descent with Chan-Vese level-set fallback
-
-### Stage 5 — Centerline verification
-
-Generates a static overlay image showing extracted centerlines on top of the CT volume, with TotalSegmentator coronary segmentation mask if available. Saved to `plots/`.
-
-### Stage 6 — Contour Editor
-
-Opens a clinical GUI for reviewing and correcting the auto-extracted vessel wall contours before PCAT computation.
-**Draw a freehand lasso around the region you want to fill or erase, then release.**
-
-**Vessel colors:** LAD = red-orange · LCX = blue · RCA = green
-| Key / Action | Effect |
-|---|---|
-| Left-drag / Right-drag | **Draw freehand lasso** to fill/erase contour region |
-| `A` | **Auto-snap boundary** (re-detect via gradient analysis) |
-| `E` | Toggle fill/erase mode |
-| `1` / `2` / `3` | Switch active vessel |
-| `←` / `→` | Navigate ±1 cross-section position |
-| `↑` / `↓` | Navigate ±5 positions |
-| `R` | Reset current contour to auto-detected |
-| `I` | Fill between slices (interpolate modified positions) |
-| `Space` | Toggle contour visibility |
-| `V` | Toggle VOI ring visibility |
-| Scroll wheel | Zoom cross-section view |
-| `S` | **Save corrected contours & continue pipeline** |
-| `Q` | Quit without saving (uses auto-detected contours) |
-- **Left panel:** CPR cross-section with vessel wall contour
-- **Right panel:** Vessel overview — r_eq profile along arc-length with modification markers
-- **Separate window:** 3D pyvista visualization with colored vessel meshes and semi-transparent fat volume
-- **Auto-snap:** Press `A` to re-detect the vessel boundary using gradient analysis from the CT image — eliminates star-shaped artifacts
-
-### Stage 7 — VOI construction & FAI computation (~3 s)
-
-For each vessel, builds the PCAT VOI by morphological dilation of the corrected vessel wall contours:
-- Computes equivalent radius: `r_eq = sqrt(area / pi)`
-- Dilates by `d = 3 × r_eq` to create the pericoronary region
-- Applies fat threshold: −190 to −30 HU
-- Computes FAI statistics (mean HU, fat fraction, voxel count)
-
-### Stage 8 — CPR Browser (opens once per vessel)
-
-After VOI computation, an interactive CPR browser opens for each vessel sequentially.
-
-| Key / Action | Effect |
-|---|---|
-| Arc-length slider | Move the cross-section needle along the vessel |
-| Rotation slider | Rotate the cutting plane (0–360°) |
-| Click on CPR image | Jump needle to that vessel position |
-| `←` / `→` or `↑` / `↓` | Step needle by one point |
-| Scroll wheel | Rotate cutting plane by ±5° |
-| `a` | Toggle anchor mode (click to place anchors on CPR) |
-| `p` | Apply anchors and print anchor data |
-| `r` | Reset rotation to 0° |
-| `q` | Close and continue to next vessel |
-
-### Stage 9 — Export & summary
-
-1. Per-vessel `.raw` VOI volumes + metadata JSON
-2. Combined all-vessel VOI exported as `.raw`
-3. CPR images: FAI overlay, vessel wall overlay, DICOM secondary capture
-4. HU histograms and radial HU profiles per vessel
-5. Summary bar chart and `*_results.json`
-
----
-
-## Estimated total runtime
-
-| Stage | Time |
-|-------|------|
-| Auto seeds (TotalSegmentator) | ~30–60 s |
-| Seed review | Interactive |
-| Frangi vesselness (MPS GPU) | ~120 s |
-| Per-vessel processing | ~5 s |
-| Contour editor | Interactive |
-| VOI + outputs | ~3 s |
-| CPR browsers | Interactive |
-| **Total (non-interactive)** | **~3 min** |
-
----
-
-## Fully Automatic Mode (batch / headless)
-
-Use this for bulk processing or servers with no display.
-
-```bash
-python pipeline/run_pipeline.py \
-    --dicom Rahaf_Patients/1200.2 \
-    --output output/patient_1200 \
-    --prefix patient1200 \
-    --auto-seeds \
-    --skip-editor \
-    --skip-cpr-browser
-```
-
-**Run all patients at once:**
-
+For headless/batch mode:
 ```bash
 python pipeline/run_pipeline.py --batch --auto-seeds --skip-editor --skip-cpr-browser
 ```
-
-**Legacy VOI mode** (uses estimated circles instead of polar-transform contours):
-
-```bash
-python pipeline/run_pipeline.py \
-    --dicom Rahaf_Patients/1200.2 \
-    --seeds seeds/patient_1200.json \
-    --output output/patient_1200 \
-    --prefix patient1200 \
-    --legacy-voi
-```
-
-> Do not use fully automatic mode for clinical reporting without a separate manual review step.
-
----
-
-## Output files
-
-All outputs are organized into subdirectories under the `--output` path:
-
-```
-output/patient_1200/
-├── patient1200_results.json          # Per-vessel FAI statistics
-├── cpr/
-│   ├── patient1200_LAD_cpr_fai.png   # CPR with FAI color overlay
-│   ├── patient1200_LAD_cpr_wall.png  # CPR with vessel wall + VOI boundary lines
-│   └── patient1200_LAD_cpr_hu.dcm    # CPR as DICOM secondary capture
-├── plots/
-│   ├── patient1200_centerline_verification.png  # Centerline + TotalSeg overlay
-│   ├── patient1200_LAD_hu_histogram.png         # HU distribution in VOI
-│   ├── patient1200_LAD_radial_profile.png       # Fat HU vs. distance from wall
-│   └── patient1200_summary.png                  # Bar charts: FAI, fat fraction, voxel count
-└── raw/
-    ├── patient1200_contour_data.npz             # Vessel wall contours (for contour editor)
-    ├── patient1200_LAD_voi.raw                  # Per-vessel VOI volume
-    ├── patient1200_LAD_voi_metadata.json        # Volume dimensions, spacing, origin
-    ├── patient1200_combined_voi.raw             # All-vessel combined VOI
-    └── patient1200_combined_voi_metadata.json
-```
-
-Each vessel (LAD, LCX, RCA) produces its own set of `cpr/`, `plots/`, and `raw/` files.
-
----
-
-## Reading CPR images
-
-- **Vessel runs top → bottom.** Top = ostium (origin), bottom = distal end.
-- **Yellow/red regions** (in `*_cpr_fai.png`) = pericoronary fat (FAI range −190 to −30 HU). Yellow = more negative HU (healthier). Red = less negative (more inflamed).
-- **Cyan contour** (in `*_cpr_wall.png`) = detected vessel lumen boundary.
-- **Green dashed lines** (in `*_cpr_wall.png`) = VOI outer boundary (3× lumen radius).
-
----
-
-## Standalone tools
-
-These can be run independently outside the pipeline:
-
-| Tool | Usage |
-|------|-------|
-| `pipeline/seed_picker.py` | Manual seed placement: `python pipeline/seed_picker.py --dicom <dir> --output seeds/patient.json` |
-| `pipeline/seed_reviewer.py` | Review/edit seeds: `python pipeline/seed_reviewer.py --dicom <dir> --seeds <json> --output <json>` |
-| `pipeline/cpr_browser.py` | Browse CPR interactively: `python pipeline/cpr_browser.py --dicom <dir> --seeds <json> --vessel LAD` |
-| `pipeline/contour_editor.py` | Edit vessel contours: `python pipeline/contour_editor.py --dicom <dir> --contour-data <npz> --output <dir> --prefix <name>` |
-| `pipeline/coronary_contour_editor.py` | Legacy contour editor: `python pipeline/coronary_contour_editor.py --dicom <dir> --data <npz> --output <dir> --prefix <name>` |
 
 ---
 
@@ -254,42 +268,33 @@ These can be run independently outside the pipeline:
 
 | Problem | Fix |
 |---------|-----|
-| "too few centerline points" | Re-run and adjust seeds in the Seed Reviewer. The pipeline uses cubic-spline interpolation as fallback. |
-| NaN mean HU in results | No fat voxels in VOI; vessel may be heavily calcified |
-| "only N vessels found" warning | Add the missing vessel manually in the Seed Reviewer |
-| Seed Reviewer / Contour Editor won't open | Add `--skip-editor --skip-cpr-browser` (headless server) |
-| TotalSegmentator fails | Place seeds manually with `seed_picker.py` (see Standalone Tools) |
-| Frangi is slow (~120 s on CPU) | Install PyTorch (`pip install torch`) for MPS GPU acceleration on Apple Silicon |
-| `s` key opens PNG save dialog | Update to latest version — this was a matplotlib keybinding conflict (fixed) |
+| Font warning on launch | Fixed — uses Helvetica instead of sans-serif |
+| Left/right reversed in axial view | Fixed — camera looks from inferior (feet) per radiology convention |
+| TotalSegmentator fails | Place seeds manually, or set `TOTALSEG_LICENSE` env var |
+| No vessels detected | Check DICOM is a contrast-enhanced cardiac CT (CCTA) |
+| NaN mean HU | Vessel may be heavily calcified; no fat voxels in VOI |
+| CPR looks wrong vs Horos | Verify CPR orientation: arc-length runs vertically (top=proximal) |
+| Slow on CPU | Install PyTorch (`pip install torch`) for MPS acceleration on Apple Silicon |
 
 ---
 
-## Patient data included
-
-| Patient | DICOM folder | Slices |
-|---------|-------------|--------|
-| 1200 | `Rahaf_Patients/1200.2/` | 405 |
-| 2 | `Rahaf_Patients/2.1/` | 149 |
-| 317 | `Rahaf_Patients/317.6/` | 399 |
-| 161 | `Rahaf_Patients/161.6/` | — |
-
-To add a new patient, change `--dicom` to the new DICOM folder and `--output` to a new folder.
-
----
-
-## Adding multiple patients (batch)
-
-Edit `PATIENT_CONFIGS` in `pipeline/run_pipeline.py`:
-
-```python
-PATIENT_CONFIGS = [
-    {"patient_id": "1200", "dicom": "Rahaf_Patients/1200.2", "output": "output/patient_1200", "prefix": "patient1200"},
-    {"patient_id": "999",  "dicom": "New_Patients/patient999", "output": "output/patient_999",  "prefix": "patient999"},
-]
-```
-
-Then run:
+## Building for Distribution
 
 ```bash
-python pipeline/run_pipeline.py --batch --auto-seeds
+# Build macOS .app bundle + DMG installer
+./scripts/build_dmg.sh
 ```
+
+Requires `pip install pyinstaller`. Output: `dist/PCAT_Workstation_1.0.0.dmg`
+
+---
+
+## References
+
+- Oikonomou EK et al. Non-invasive detection of coronary inflammation using computed tomography and prediction of residual cardiovascular risk. *Eur Heart J* 2018.
+- Oikonomou EK et al. A novel machine learning-derived radiotranscriptomic signature of perivascular fat improves cardiac risk prediction using coronary CT angiography. *Lancet* 2018 (CRISP-CT).
+- Kanitsar A et al. CPR — Curved Planar Reformation. *IEEE Visualization* 2002.
+
+---
+
+*Molloi Lab — UC Irvine*

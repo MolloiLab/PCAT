@@ -360,6 +360,7 @@ class PipelineWorker(QThread):
                 if vessel not in self.vessel_centerlines:
                     continue
                 try:
+                    self._emit(f"Generating {vessel} CPR image...")
                     from pipeline.visualize import _compute_cpr_data
                     cl_ijk = self.vessel_centerlines[vessel]["proximal"]
                     cpr_vol, N_frame, B_frame, positions, arclengths, n_h, n_w = _compute_cpr_data(

@@ -595,6 +595,8 @@ class _CPRPanel(QWidget):
         vdata = self._root._current_vdata()
         if vdata is None or vdata.cpr_image is None:
             return 0.0
+        if rect.width() < 1 or rect.height() < 1:
+            return 0.0
 
         n_arc, n_lateral = vdata.cpr_image.shape
         row_extent_mm = vdata.row_extent_mm or 25.0
@@ -988,6 +990,10 @@ class CPRView(QWidget):
         self._rotation_slider.setValue(0)
         self._rotation_label.setText("0\u00b0")
         self._rotation_slider.blockSignals(False)
+        # Reset pan/zoom/measurements
+        self._cpr_panel._pan_offset = QPointF(0, 0)
+        self._cpr_panel._zoom_factor = 1.0
+        self._cpr_panel._measurements = []
         self._refresh_cpr()
         self._refresh_cs()
         self.vessel_changed.emit(vessel)
@@ -1141,6 +1147,8 @@ class CPRView(QWidget):
         )
         # _build_cpr_image_fast returns (n_lateral, n_arc); transpose to (n_arc, n_lateral)
         cpr_img = cpr_img_raw.T
+        # Replace NaN at volume edges with -1024 (air) to avoid black patches
+        np.nan_to_num(cpr_img, copy=False, nan=-1024.0)
 
         # Update stored data
         vd.cpr_image = cpr_img

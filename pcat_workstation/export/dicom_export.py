@@ -18,6 +18,7 @@ def export_cpr_as_dicom(
     vessel_name: str = "",
     window: float = 800.0,
     level: float = 200.0,
+    study_instance_uid: str = "",
 ) -> None:
     """Export a CPR image as a DICOM Secondary Capture.
 
@@ -32,9 +33,8 @@ def export_cpr_as_dicom(
     """
     try:
         import pydicom
-        from pydicom.dataset import Dataset, FileDataset
+        from pydicom.dataset import FileDataset
         from pydicom.uid import generate_uid, ExplicitVRLittleEndian
-        from pydicom.sequence import Sequence
     except ImportError:
         raise RuntimeError(
             "pydicom is required for DICOM export. Install with: pip install pydicom"
@@ -65,7 +65,7 @@ def export_cpr_as_dicom(
     # Study
     ds.StudyDate = study_date.replace("-", "")
     ds.StudyTime = ""
-    ds.StudyInstanceUID = generate_uid()
+    ds.StudyInstanceUID = study_instance_uid or generate_uid()
     ds.StudyDescription = "PCAT Analysis"
 
     # Series
@@ -121,6 +121,13 @@ def export_cpr_series(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Share a single StudyInstanceUID so PACS groups all vessels together
+    try:
+        from pydicom.uid import generate_uid
+        shared_study_uid = generate_uid()
+    except ImportError:
+        shared_study_uid = ""
+
     paths = []
     for vessel, img in cpr_images.items():
         if img is None:
@@ -134,6 +141,7 @@ def export_cpr_series(
             vessel_name=vessel,
             window=window,
             level=level,
+            study_instance_uid=shared_study_uid,
         )
         paths.append(out_path)
 

@@ -123,8 +123,8 @@ class ProgressPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(200)
-        self.setMaximumWidth(280)
+        self.setMinimumWidth(170)
+        self.setMaximumWidth(230)
 
         self._stage_rows: Dict[str, _StageRow] = {}
         self._build_ui()

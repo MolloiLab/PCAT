@@ -86,23 +86,27 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
     def _setup_docks(self) -> None:
-        # Left dock — DICOM Browser
+        # Left dock — DICOM Browser (closable, toggled via View menu)
         self._dicom_browser = DicomBrowser()
-        left_dock = QDockWidget("DICOM Browser", self)
-        left_dock.setWidget(self._dicom_browser)
-        left_dock.setFeatures(
-            QDockWidget.DockWidgetFeature(0)  # not closable, not movable, not floatable
+        self._left_dock = QDockWidget("DICOM Browser", self)
+        self._left_dock.setWidget(self._dicom_browser)
+        self._left_dock.setFeatures(
+            QDockWidget.DockWidgetClosable
         )
-        self.addDockWidget(Qt.LeftDockWidgetArea, left_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self._left_dock)
 
-        # Right dock — Progress Panel
+        # Right dock — Progress Panel (closable, toggled via View menu)
         self._progress_panel = ProgressPanel()
-        right_dock = QDockWidget("Pipeline", self)
-        right_dock.setWidget(self._progress_panel)
-        right_dock.setFeatures(
-            QDockWidget.DockWidgetFeature(0)
+        self._right_dock = QDockWidget("Pipeline", self)
+        self._right_dock.setWidget(self._progress_panel)
+        self._right_dock.setFeatures(
+            QDockWidget.DockWidgetClosable
         )
-        self.addDockWidget(Qt.RightDockWidgetArea, right_dock)
+        self.addDockWidget(Qt.RightDockWidgetArea, self._right_dock)
+
+        # Start with both hidden — maximizes image area
+        self._left_dock.hide()
+        self._right_dock.hide()
 
     def _setup_toolbar(self) -> None:
         self._toolbar = MainToolBar(self)
@@ -162,6 +166,17 @@ class MainWindow(QMainWindow):
         batch_action = QAction("Batch Processing...", self)
         batch_action.triggered.connect(self._on_batch)
         pipeline_menu.addAction(batch_action)
+
+        # View menu — toggle sidebars
+        view_menu = menu_bar.addMenu("&View")
+
+        toggle_browser = self._left_dock.toggleViewAction()
+        toggle_browser.setShortcut(QKeySequence("Ctrl+1"))
+        view_menu.addAction(toggle_browser)
+
+        toggle_pipeline = self._right_dock.toggleViewAction()
+        toggle_pipeline.setShortcut(QKeySequence("Ctrl+2"))
+        view_menu.addAction(toggle_pipeline)
 
         # Help menu
         help_menu = menu_bar.addMenu("&Help")

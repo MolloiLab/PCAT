@@ -19,8 +19,8 @@ class DicomBrowser(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
-        self.setMinimumWidth(220)
-        self.setMaximumWidth(350)
+        self.setMinimumWidth(160)
+        self.setMaximumWidth(220)
 
         self._build_ui()
         self._apply_styles()

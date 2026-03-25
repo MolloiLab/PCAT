@@ -283,30 +283,39 @@ class _CPRPanel(QWidget):
         p.end()
 
     def _draw_arc_ticks(self, p: QPainter, rect: QRectF) -> None:
-        """Draw arc-length ticks (0 mm, 10 mm, 20 mm ...) along the left Y-axis."""
+        """Draw arc-length ticks (0 mm, 10 mm ...) along the bottom X-axis,
+        and lateral distance labels on the left Y-axis."""
         vdata = self._root._current_vdata()
-        if vdata is None or vdata.contour_result is None:
+        if vdata is None:
             return
 
-        arclengths = vdata.contour_result.arclengths
+        arclengths = vdata.cpr_arclengths
         if arclengths is None or len(arclengths) == 0:
             return
 
-        max_arc = arclengths[-1]
         p.setPen(QColor("#cccccc"))
-        p.setFont(QFont("monospace", 8))
+        p.setFont(QFont("Helvetica", 8))
 
+        # X-axis: arc-length ticks at bottom
+        max_arc = float(arclengths[-1])
         step_mm = 10.0
         arc_val = 0.0
         while arc_val <= max_arc + 0.01:
-            # Find the index closest to this arc-length
             idx = int(np.searchsorted(arclengths, arc_val))
-            idx = min(idx, len(arclengths) - 1)
-            y = self._y_for_index(idx)
-            # Tick
-            p.drawLine(QPointF(rect.left() - 4, y), QPointF(rect.left(), y))
-            p.drawText(QPointF(rect.left() - 36, y + 4), f"{int(arc_val)}")
+            idx = min(idx, self._n_positions - 1)
+            x = self._x_for_index(idx)
+            p.drawLine(QPointF(x, rect.bottom()), QPointF(x, rect.bottom() + 4))
+            p.drawText(QPointF(x - 6, rect.bottom() + 14), f"{int(arc_val)}")
             arc_val += step_mm
+
+        # X-axis label
+        p.drawText(QPointF(rect.center().x() - 40, rect.bottom() + 24), "mm along vessel")
+
+        # Y-axis: lateral distance labels
+        half_w_mm = vdata.row_extent_mm or 25.0
+        for frac, label in [(0.0, f"-{int(half_w_mm)}"), (0.5, "0"), (1.0, f"+{int(half_w_mm)}")]:
+            y = rect.top() + frac * rect.height()
+            p.drawText(QPointF(rect.left() - 28, y + 4), label)
 
     def _draw_wall_boundaries(self, p: QPainter, rect: QRectF) -> None:
         """Draw vessel wall boundaries as green lines along the CPR."""
@@ -1011,112 +1020,98 @@ class CPRView(QWidget):
             return
 
         if self._stretched_mode:
-            # Curved CPR: project centerline onto a 2D plane
             img_display = self._build_curved_cpr(vd)
             if img_display is None:
-                img_display = vd.cpr_image.T  # fallback to straightened
+                img_display = vd.cpr_image.T
         else:
-            # Straightened: transpose so vessel runs left-to-right
             img_display = vd.cpr_image.T
 
+        # Render: grayscale background + FAI overlay (yellow→red for -190...-30 HU)
         gray = _apply_wl(img_display, self._window, self._level)
-        qimg = _gray_to_qimage(gray)
+        rgb = np.stack([gray, gray, gray], axis=-1)  # (H, W, 3)
+
+        # FAI overlay: yellow (-190 HU) → red (-30 HU)
+        fai_mask = (img_display >= -190.0) & (img_display <= -30.0) & ~np.isnan(img_display)
+        if fai_mask.any():
+            t = np.clip((img_display[fai_mask] - (-190.0)) / (160.0), 0, 1)  # 0=yellow, 1=red
+            r = np.full_like(t, 255)
+            g = ((1.0 - t) * 220).astype(np.uint8)  # 220→0 (yellow→red)
+            b = np.zeros_like(t, dtype=np.uint8)
+            alpha = 0.6
+            rgb[fai_mask, 0] = np.clip(rgb[fai_mask, 0] * (1 - alpha) + r * alpha, 0, 255).astype(np.uint8)
+            rgb[fai_mask, 1] = np.clip(rgb[fai_mask, 1] * (1 - alpha) + g * alpha, 0, 255).astype(np.uint8)
+            rgb[fai_mask, 2] = np.clip(rgb[fai_mask, 2] * (1 - alpha) + b * alpha, 0, 255).astype(np.uint8)
+
+        h, w = gray.shape
+        rgb_c = np.ascontiguousarray(rgb)
+        qimg = QImage(rgb_c.data, w, h, w * 3, QImage.Format_RGB888).copy()
         pm = QPixmap.fromImage(qimg)
 
-        n_pos = vd.cpr_image.shape[0]  # arc-length positions
+        n_pos = vd.cpr_image.shape[0]
         self._cpr_panel.set_pixmap(pm, n_pos)
         self._cpr_panel.set_needle(self._needle_idx)
 
     def _build_curved_cpr(self, vd) -> "np.ndarray | None":
-        """Build curved CPR: project 3D centerline path onto coronal plane.
+        """Build stretched/curved CPR (Horos CPRStretchedView).
 
-        Instead of straightening the vessel, sample the volume along the
-        actual 3D vessel path projected onto the coronal (X-Z) plane.
-        The result preserves the vessel's natural curvature.
+        Takes a thick-slab MIP along the Y-axis (anterior-posterior),
+        centered on the vessel's Y position at each (X, Z) pixel.
+        This creates a coronal projection that follows the vessel's
+        depth, showing it in its natural curved 3D trajectory.
         """
         if vd.volume is None or vd.cpr_positions_mm is None:
             return None
 
         import numpy as np
-        from scipy.ndimage import map_coordinates
 
-        positions = vd.cpr_positions_mm  # (N, 3) — mm coordinates along centerline
-        N_frame = vd.cpr_N_frame  # (N, 3) — normal vectors
+        positions = vd.cpr_positions_mm
         spacing = vd.spacing
-        if positions is None or N_frame is None or spacing is None:
+        if positions is None or spacing is None:
             return None
 
-        n_arc = len(positions)
-        half_width_mm = vd.row_extent_mm or 25.0
-        n_lateral = 256
+        pos_vox = positions / spacing  # (N, 3) [z, y, x]
 
-        # For each arc-length position, sample perpendicular to the vessel
-        # using the normal vector (same as straightened CPR) but lay the
-        # result out following the projected centerline path.
-        lat_offsets = np.linspace(-half_width_mm, half_width_mm, n_lateral)
+        # Bounding box of centerline in X-Z (coronal) plane
+        x_proj = pos_vox[:, 2]
+        z_proj = pos_vox[:, 0]
+        y_centers = pos_vox[:, 1]
 
-        # Sample the straightened CPR data (already computed)
-        # Then warp it to follow the projected centerline shape.
-        # The simplest curved CPR: use the straightened data but render
-        # it along the projected 2D path of the centerline.
-
-        # Project centerline onto X-Z plane (coronal projection)
-        pos_vox = positions / spacing  # (N, 3) in voxel coords [z, y, x]
-
-        # Determine output image size from projected bounding box
-        x_proj = pos_vox[:, 2]  # x coordinate
-        z_proj = pos_vox[:, 0]  # z coordinate
-
-        # Output image: rows = Z range, cols = X range
-        margin_vox = int(half_width_mm / float(spacing[2])) + 5
-        x_min = max(0, int(np.floor(x_proj.min())) - margin_vox)
-        x_max = min(vd.volume.shape[2] - 1, int(np.ceil(x_proj.max())) + margin_vox)
-        z_min = max(0, int(np.floor(z_proj.min())) - margin_vox)
-        z_max = min(vd.volume.shape[0] - 1, int(np.ceil(z_proj.max())) + margin_vox)
+        margin = 30  # voxels of padding around vessel
+        x_min = max(0, int(np.floor(x_proj.min())) - margin)
+        x_max = min(vd.volume.shape[2] - 1, int(np.ceil(x_proj.max())) + margin)
+        z_min = max(0, int(np.floor(z_proj.min())) - margin)
+        z_max = min(vd.volume.shape[0] - 1, int(np.ceil(z_proj.max())) + margin)
 
         out_h = z_max - z_min + 1
         out_w = x_max - x_min + 1
         if out_h < 10 or out_w < 10:
             return None
 
-        # Build curved CPR by taking a thick-slab MIP along Y at each (X, Z)
-        # centered on the vessel's Y position
-        slab_vox = max(1, int(half_width_mm / float(spacing[1])))
+        # For each (x, z) pixel, find nearest centerline point's Y center
+        # Build a Y-center map using nearest-neighbor from centerline
+        from scipy.interpolate import NearestNDInterpolator
 
-        # For each arc-length position, get the Y center from the centerline
-        # Then build a thin-slab coronal projection
-        from scipy.interpolate import interp1d
+        cl_xz = np.column_stack([x_proj, z_proj])
+        interp_y = NearestNDInterpolator(cl_xz, y_centers)
 
-        # Map projected X,Z positions to Y positions (vessel depth)
-        # Create a lookup: for each (x, z) pixel, find the nearest centerline
-        # point and use its Y value for the MIP center
-        curved_img = np.full((out_h, out_w), np.nan, dtype=np.float32)
+        # Grid of output pixels
+        xx = np.arange(x_min, x_max + 1)
+        zz = np.arange(z_min, z_max + 1)
+        grid_x, grid_z = np.meshgrid(xx, zz)  # (out_h, out_w)
 
-        # Simple approach: for each centerline point, sample a column of voxels
-        # perpendicular to the viewing direction (Y axis)
-        y_centers = pos_vox[:, 1]  # Y coordinate of vessel at each arc position
+        # Get Y-center for each pixel
+        y_map = interp_y(grid_x.ravel(), grid_z.ravel()).reshape(out_h, out_w)
 
-        for i in range(n_arc):
-            xi = int(round(x_proj[i])) - x_min
-            zi = int(round(z_proj[i])) - z_min
-            y_c = int(round(y_centers[i]))
+        # Thick-slab MIP along Y centered on vessel
+        slab_half = 15  # voxels (~5mm at 0.34mm spacing)
+        volume = vd.volume
 
-            if 0 <= xi < out_w and 0 <= zi < out_h:
-                # MIP in Y direction centered on vessel
-                y_lo = max(0, y_c - slab_vox)
-                y_hi = min(vd.volume.shape[1], y_c + slab_vox + 1)
-                slab = vd.volume[int(round(z_proj[i])), y_lo:y_hi, int(round(x_proj[i]))]
-                if len(slab) > 0:
-                    curved_img[zi, xi] = np.max(slab)
-
-        # Fill gaps with nearest-neighbor interpolation
-        from scipy.ndimage import maximum_filter
-        mask = np.isnan(curved_img)
-        if mask.any() and not mask.all():
-            curved_img_filled = maximum_filter(
-                np.where(mask, -1024.0, curved_img), size=3
-            )
-            curved_img[mask] = curved_img_filled[mask]
+        # Vectorized: for each (z, x), take MIP over y_center ± slab_half
+        curved_img = np.full((out_h, out_w), -1024.0, dtype=np.float32)
+        for dy in range(-slab_half, slab_half + 1):
+            y_sample = np.clip((y_map + dy).astype(int), 0, volume.shape[1] - 1)
+            sampled = volume[grid_z, y_sample, grid_x]
+            curved_img = np.maximum(curved_img, sampled)
 
         return curved_img
 

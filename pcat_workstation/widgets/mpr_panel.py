@@ -46,9 +46,16 @@ class MPRPanel(QWidget):
         layout.addWidget(self._sagittal, 1, 0)
         layout.addWidget(self._cpr_view, 1, 1)
 
+        # Equal 2×2 grid — same as Horos/OsiriX 4-panel layout
         for i in range(2):
             layout.setRowStretch(i, 1)
             layout.setColumnStretch(i, 1)
+
+        # Prevent any panel from dominating
+        from PySide6.QtWidgets import QSizePolicy
+        for w in (self._axial, self._coronal, self._sagittal, self._cpr_view):
+            w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+            w.setMinimumSize(100, 100)
 
     # ── Signal wiring ────────────────────────────────────────────────
 

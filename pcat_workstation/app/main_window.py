@@ -19,6 +19,7 @@ from pcat_workstation.widgets.results_summary import ResultsSummary
 from pcat_workstation.widgets.analysis_dashboard import AnalysisDashboard
 from pcat_workstation.workers.pipeline_worker import PipelineWorker
 from pcat_workstation.workers.dicom_loader_worker import DicomLoaderWorker
+from pcat_workstation.workers.cpr_worker import CPRWorker
 from pcat_workstation.models.patient_session import PatientSession
 from pcat_workstation.models.dicom_index import DicomIndex
 from pcat_workstation.models.seed_edit_state import SeedEditState
@@ -43,6 +44,8 @@ class MainWindow(QMainWindow):
         self._loader_worker: Optional[DicomLoaderWorker] = None
         self._edit_state: Optional[SeedEditState] = None
         self._edit_controller: Optional[SeedEditController] = None
+        self._cpr_worker: Optional[CPRWorker] = None
+        self._analysis_cache: dict = {}  # {vessel: {"hu_values":..., "distances_mm":..., "mean_hu":..., "octants":...}}
 
         # Build UI
         self._setup_central_widget()
@@ -255,10 +258,15 @@ class MainWindow(QMainWindow):
 
     def _on_loader_finished(self, volume, meta, dicom_path: Path, session_dir: Path) -> None:
         """Handle successful DICOM load from background thread."""
-        # Close progress dialog
+        from PySide6.QtWidgets import QApplication
+
+        # Update progress dialog instead of closing — VTK set_volume blocks
+        # the main thread, so we need to keep the dialog visible with a
+        # meaningful message until the heavy work is done.
         if hasattr(self, "_load_progress") and self._load_progress is not None:
-            self._load_progress.close()
-            self._load_progress = None
+            self._load_progress.setLabelText("Rendering volume...")
+            self._load_progress.setValue(self._load_progress.maximum())
+            QApplication.processEvents()
 
         # Re-enable import
         self._dicom_browser._import_btn.setEnabled(True)
@@ -272,11 +280,12 @@ class MainWindow(QMainWindow):
         self._progress_panel.reset_stages()
         self._progress_panel.clear_vessel_summary()
         self._progress_panel.clear_progress()
+        self._analysis_cache = {}
 
         # Mark import stage complete (must be on main thread for autosave)
         self._session.set_stage_status("import", "complete")
 
-        # VTK setup must happen on main thread
+        # VTK setup must happen on main thread — this blocks for large volumes
         if volume is not None and meta is not None:
             spacing = meta.get("spacing_mm", [1.0, 1.0, 1.0])
             self._mpr_panel.set_volume(volume, spacing)
@@ -320,9 +329,29 @@ class MainWindow(QMainWindow):
         self._progress_panel.set_stage_status("import", "complete")
 
         shape = meta.get("shape", [0, 0, 0]) if meta else [0, 0, 0]
+
+        # Auto-enable seed editing so the user can place ostium seeds.
+        # In the new pipeline, seeds are placed manually (no TotalSegmentator).
+        if volume is not None and meta is not None:
+            from pcat_workstation.app.config import VESSEL_CONFIGS
+            empty_seeds = {
+                v: {"ostium": None, "waypoints": []}
+                for v in VESSEL_CONFIGS
+            }
+            self._enable_seed_editing(empty_seeds, spacing, volume.shape)
+
+        # Initialize CPR vessel so it can receive pipeline data
+        self._mpr_panel.set_cpr_vessel(self._current_vessel)
+
+        # NOW close the progress dialog — all heavy work is done
+        if hasattr(self, "_load_progress") and self._load_progress is not None:
+            self._load_progress.close()
+            self._load_progress = None
+
         self.statusBar().showMessage(
             f"Loaded: {self._session.patient_id} "
-            f"({shape[0]}\u00d7{shape[1]}\u00d7{shape[2]})"
+            f"({shape[0]}\u00d7{shape[1]}\u00d7{shape[2]}) "
+            "\u2014 click on MPR views to place ostium seeds"
         )
         self._loader_worker = None
 
@@ -422,6 +451,11 @@ class MainWindow(QMainWindow):
         ):
             return  # Already running
 
+        # Save current seeds from edit state into the session so the
+        # pipeline worker can read them.
+        if self._edit_state is not None:
+            self._edit_state.save_to_session(self._session)
+
         # If all stages are "complete" but results are missing/empty,
         # or if user explicitly re-runs, reset and start fresh.
         resume_from = self._session.get_resume_stage()
@@ -461,7 +495,23 @@ class MainWindow(QMainWindow):
         ):
             return
 
+        # Save seeds from edit state so the pipeline can read them
+        if self._edit_state is not None:
+            self._edit_state.save_to_session(self._session)
+
+        # If the next stage is "seeds" and we have placed seeds,
+        # mark seeds as complete so we can advance to centerlines.
         next_stage = self._session.get_resume_stage()
+        if next_stage == "seeds" and self._edit_state is not None:
+            has_any_ostium = any(
+                entry.get("ostium") is not None
+                for entry in self._edit_state.seeds.values()
+            )
+            if has_any_ostium:
+                self._session.set_stage_status("seeds", "complete")
+                self._progress_panel.set_stage_status("seeds", "complete")
+                next_stage = self._session.get_resume_stage()
+
         if next_stage is None:
             return
 
@@ -487,7 +537,6 @@ class MainWindow(QMainWindow):
         worker.progress_message.connect(self._on_progress_message)
         worker.seeds_ready.connect(self._on_seeds_ready)
         worker.centerlines_ready.connect(self._on_centerlines_ready)
-        worker.contours_ready.connect(self._on_contours_ready)
         worker.voi_masks_ready.connect(self._on_voi_masks_ready)
         worker.cpr_ready.connect(self._on_cpr_ready)
         worker.cpr_frame_ready.connect(self._on_cpr_frame_ready)
@@ -603,12 +652,6 @@ class MainWindow(QMainWindow):
             self._save_overlays(centerlines=centerlines_dict)
 
     @Slot(object)
-    def _on_contours_ready(self, contour_results_dict: dict) -> None:
-        self._mpr_panel.set_contour_overlay(contour_results_dict)
-        # Pass ContourResult data to CPR view for interactive cross-section
-        self._mpr_panel.set_contour_data(contour_results_dict)
-
-    @Slot(object)
     def _on_voi_masks_ready(self, voi_masks_dict: dict) -> None:
         meta = self._session.get_meta() if self._session else None
         if meta:
@@ -638,11 +681,14 @@ class MainWindow(QMainWindow):
 
     @Slot(str, object)
     def _on_analysis_data_ready(self, vessel: str, data: dict) -> None:
-        """Update the analysis dashboard with HU histogram and radial profile."""
+        """Update the analysis dashboard with HU histogram, radial profile, and angular asymmetry."""
+        self._analysis_cache[vessel] = data
         self._analysis_dashboard.plot_histogram(data["hu_values"], vessel)
         self._analysis_dashboard.plot_radial_profile(
             data["distances_mm"], data["mean_hu"], vessel,
         )
+        if "octants" in data:
+            self._analysis_dashboard.plot_angular_asymmetry(data["octants"], vessel)
         self._analysis_dashboard.set_collapsed(False)
 
     @Slot(str)
@@ -666,6 +712,16 @@ class MainWindow(QMainWindow):
                     viewers = self._mpr_panel.get_viewers()
                     for view in viewers.values():
                         view.set_crosshair(x_mm, y_mm, z_mm)
+
+        # Update analysis dashboard for selected vessel
+        if vessel in self._analysis_cache:
+            data = self._analysis_cache[vessel]
+            self._analysis_dashboard.plot_histogram(data["hu_values"], vessel)
+            self._analysis_dashboard.plot_radial_profile(
+                data["distances_mm"], data["mean_hu"], vessel,
+            )
+            if "octants" in data:
+                self._analysis_dashboard.plot_angular_asymmetry(data["octants"], vessel)
 
         self.statusBar().showMessage(f"Vessel: {vessel}")
 
@@ -891,19 +947,26 @@ class MainWindow(QMainWindow):
         self._edit_state.save_to_session(self._session)
 
         # Reset pipeline stages from centerlines onward
-        for stage in ["centerlines", "contours", "pcat_voi", "statistics"]:
+        for stage in ["centerlines", "pcat_voi", "statistics"]:
             self._session.set_stage_status(stage, "pending")
 
         # Re-run pipeline (edit mode stays active; seeds_ready will refresh it)
         self._on_run_pipeline()
 
     def _on_edit_centerline_changed(self, vessel: str) -> None:
-        """Refresh centerline overlay when seeds are edited."""
+        """Refresh centerline overlay AND regenerate CPR live (Horos pattern).
+
+        When a seed is added/moved/deleted, the spline centerline is
+        recomputed by SeedEditState.  This handler updates the MPR overlay
+        and dispatches an async CPRWorker to regenerate the CPR image.
+        """
         if self._edit_state is None or self._session is None:
             return
         meta = self._session.get_meta()
         if not meta:
             return
+
+        # 1. Refresh centerline overlay on MPR views
         cl_dict = {}
         for v, cl in self._edit_state.centerlines.items():
             if cl is not None:
@@ -911,12 +974,32 @@ class MainWindow(QMainWindow):
         if cl_dict:
             self._mpr_panel.set_centerline_overlay(cl_dict, meta["spacing_mm"])
 
-    def _on_seeds_edited(self, vessel: str) -> None:
-        """Clear stale CPR when seeds are moved (CPR is now outdated)."""
-        self._mpr_panel.clear_cpr()
-        self.statusBar().showMessage(
-            "Seeds edited \u2014 click Run to update centerlines and CPR"
+        # 2. Dispatch async CPR regeneration for this vessel
+        centerline = self._edit_state.centerlines.get(vessel)
+        if centerline is None or len(centerline) < 10:
+            return  # too few points for a meaningful CPR
+
+        volume = self._session.get_volume()
+        if volume is None:
+            return
+
+        # If a CPR worker is still running, let it finish — the new one
+        # will overwrite its result.  QThread.quit() doesn't stop run().
+        if self._cpr_worker is not None and self._cpr_worker.isRunning():
+            self._cpr_worker.wait(50)  # brief wait, non-blocking
+
+        self._cpr_worker = CPRWorker(
+            vessel, volume, centerline, meta["spacing_mm"], parent=self,
         )
+        self._cpr_worker.cpr_ready.connect(self._on_cpr_ready)
+        self._cpr_worker.cpr_frame_ready.connect(self._on_cpr_frame_ready)
+        self._cpr_worker.start()
+        self.statusBar().showMessage(f"Updating {vessel} CPR...")
+
+    def _on_seeds_edited(self, vessel: str) -> None:
+        """Seeds were edited — CPR auto-updates via centerline_changed."""
+        # Don't clear CPR; the live CPR worker handles updates.
+        self.statusBar().showMessage("Seeds edited \u2014 updating CPR...")
 
     # ------------------------------------------------------------------ #
     #  Events

@@ -299,8 +299,8 @@ class ProgressPanel(QWidget):
 
         for vessel_name, stats in vessel_stats.items():
             color = _VESSEL_COLORS.get(vessel_name, "#e0e0e0")
-            fai_value = stats.get("mean_fai", 0.0)
-            risk = stats.get("risk", "LOW")
+            fai_value = stats.get("hu_mean", stats.get("mean_fai", 0.0))
+            risk = stats.get("fai_risk", stats.get("risk", "LOW"))
 
             row = QFrame()
             row_layout = QHBoxLayout(row)

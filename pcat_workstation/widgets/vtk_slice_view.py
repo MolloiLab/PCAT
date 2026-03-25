@@ -124,7 +124,9 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
         # Use pixelDelta for trackpad gestures, angleDelta for mouse wheel
         delta_y = ev.pixelDelta().y() if ev.pixelDelta().y() != 0 else ev.angleDelta().y()
         # Ctrl+scroll OR Cmd+scroll = zoom (macOS pinch sends one of these)
-        if ev.modifiers() & (_Qt.ControlModifier | _Qt.MetaModifier):
+        mods = ev.modifiers()
+        ctrl_meta = _Qt.ControlModifier | _Qt.MetaModifier
+        if mods & ctrl_meta:
             self.ctrl_scroll_event.emit(1 if delta_y > 0 else -1)
         elif delta_y > 0:
             self.scroll_event.emit(1)
@@ -210,8 +212,9 @@ class _SafeVTKWidget(QVTKRenderWindowInteractor):
         ev.accept()
 
     def keyPressEvent(self, ev):
-        from PySide6.QtCore import Qt as _Qt  # noqa: F811
-        self.key_press_event.emit(ev.key(), int(ev.modifiers()))
+        mods = ev.modifiers()
+        mod_val = mods.value if hasattr(mods, "value") else int(mods)
+        self.key_press_event.emit(ev.key(), mod_val)
         ev.accept()
 
 
@@ -436,6 +439,7 @@ class VTKSliceView(QWidget):
                 self._voi_mapper.SetOrientationToX()
 
         self._update_seed_visibility()
+        self._update_centerline_clip()
         self._update_header()
         self._render()
         self.slice_changed.emit(self._current_slice)
@@ -745,36 +749,52 @@ class VTKSliceView(QWidget):
         radius: float,
         rgb: tuple,
     ) -> list:
-        """Create a filled sphere marker for a waypoint seed."""
-        sphere = vtkSphereSource()
-        sphere.SetRadius(radius)
-        sphere.SetCenter(cx, cy, cz)
-        sphere.SetThetaResolution(16)
-        sphere.SetPhiResolution(16)
-        sphere.Update()
+        """Create a flat 2D disc marker for a waypoint seed (aligned to slice plane)."""
+        from vtkmodules.vtkFiltersSources import vtkDiskSource
+        disk = vtkDiskSource()
+        disk.SetInnerRadius(0)
+        disk.SetOuterRadius(radius)
+        disk.SetRadialResolution(1)
+        disk.SetCircumferentialResolution(24)
+        disk.Update()
+
+        # Transform to position and align to slice plane
+        from vtkmodules.vtkCommonTransforms import vtkTransform
+        from vtkmodules.vtkFiltersGeneral import vtkTransformPolyDataFilter
+        t = vtkTransform()
+        t.Translate(cx, cy, cz)
+        if self._orientation == "coronal":
+            t.RotateX(90)
+        elif self._orientation == "sagittal":
+            t.RotateY(90)
+        # axial: disk already in XY plane (default)
+        tf = vtkTransformPolyDataFilter()
+        tf.SetInputData(disk.GetOutput())
+        tf.SetTransform(t)
+        tf.Update()
 
         actors = []
-        # White wireframe outline
+        # White outline
         m1 = vtkPolyDataMapper()
-        m1.SetInputData(sphere.GetOutput())
+        m1.SetInputData(tf.GetOutput())
         a1 = vtkActor()
         a1.SetMapper(m1)
         a1.GetProperty().SetColor(1.0, 1.0, 1.0)
         a1.GetProperty().SetRepresentationToWireframe()
-        a1.GetProperty().SetLineWidth(1.5)
-        a1.GetProperty().SetOpacity(0.5)
+        a1.GetProperty().SetLineWidth(1.0)
+        a1.GetProperty().SetOpacity(0.7)
         self._vtk_renderer.AddActor(a1)
         self._overlay_actors.append(a1)
         actors.append(a1)
 
-        # Colored solid fill
+        # Colored fill
         m2 = vtkPolyDataMapper()
-        m2.SetInputData(sphere.GetOutput())
+        m2.SetInputData(tf.GetOutput())
         a2 = vtkActor()
         a2.SetMapper(m2)
         a2.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
         a2.GetProperty().SetRepresentationToSurface()
-        a2.GetProperty().SetOpacity(0.9)
+        a2.GetProperty().SetOpacity(0.85)
         self._vtk_renderer.AddActor(a2)
         self._overlay_actors.append(a2)
         actors.append(a2)
@@ -787,36 +807,47 @@ class VTKSliceView(QWidget):
         size: float,
         rgb: tuple,
     ) -> list:
-        """Create a filled cube marker for an ostium seed."""
-        cube = vtkCubeSource()
-        cube.SetXLength(size)
-        cube.SetYLength(size)
-        cube.SetZLength(size)
-        cube.SetCenter(cx, cy, cz)
-        cube.Update()
+        """Create a flat 2D square marker for an ostium seed (aligned to slice plane)."""
+        from vtkmodules.vtkFiltersSources import vtkPlaneSource
+        plane = vtkPlaneSource()
+        hs = size / 2.0  # half-size
+        # Align to slice orientation
+        if self._orientation == "axial":
+            plane.SetOrigin(cx - hs, cy - hs, cz)
+            plane.SetPoint1(cx + hs, cy - hs, cz)
+            plane.SetPoint2(cx - hs, cy + hs, cz)
+        elif self._orientation == "coronal":
+            plane.SetOrigin(cx - hs, cy, cz - hs)
+            plane.SetPoint1(cx + hs, cy, cz - hs)
+            plane.SetPoint2(cx - hs, cy, cz + hs)
+        else:  # sagittal
+            plane.SetOrigin(cx, cy - hs, cz - hs)
+            plane.SetPoint1(cx, cy + hs, cz - hs)
+            plane.SetPoint2(cx, cy - hs, cz + hs)
+        plane.Update()
 
         actors = []
-        # White wireframe outline
+        # White outline
         m1 = vtkPolyDataMapper()
-        m1.SetInputData(cube.GetOutput())
+        m1.SetInputData(plane.GetOutput())
         a1 = vtkActor()
         a1.SetMapper(m1)
         a1.GetProperty().SetColor(1.0, 1.0, 1.0)
         a1.GetProperty().SetRepresentationToWireframe()
-        a1.GetProperty().SetLineWidth(1.5)
-        a1.GetProperty().SetOpacity(0.5)
+        a1.GetProperty().SetLineWidth(2.0)
+        a1.GetProperty().SetOpacity(0.8)
         self._vtk_renderer.AddActor(a1)
         self._overlay_actors.append(a1)
         actors.append(a1)
 
-        # Colored solid fill
+        # Colored fill
         m2 = vtkPolyDataMapper()
-        m2.SetInputData(cube.GetOutput())
+        m2.SetInputData(plane.GetOutput())
         a2 = vtkActor()
         a2.SetMapper(m2)
         a2.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
         a2.GetProperty().SetRepresentationToSurface()
-        a2.GetProperty().SetOpacity(0.9)
+        a2.GetProperty().SetOpacity(0.85)
         self._vtk_renderer.AddActor(a2)
         self._overlay_actors.append(a2)
         actors.append(a2)
@@ -1007,10 +1038,16 @@ class VTKSliceView(QWidget):
     def set_centerline_overlay(self, centerlines_dict: dict, spacing: list) -> None:
         """Show vessel centerlines as colored lines with white outline.
 
-        Horos style: vessel-colored line (lw 1.5, alpha 0.8) over a
-        slightly wider white line for contrast against any background.
+        Centerlines are clipped to a ±2mm slab around the current slice
+        so they only appear where the vessel is visible.
         """
+        from vtkmodules.vtkCommonDataModel import vtkPlane
+
         sx, sy, sz = spacing[2], spacing[1], spacing[0]
+        slab_mm = 2.0  # show centerline within ±2mm of current slice
+
+        # Remove old centerline clipping planes
+        self._centerline_mappers = []
 
         for vessel, cl_ijk in centerlines_dict.items():
             if cl_ijk is None or len(cl_ijk) < 2:
@@ -1032,9 +1069,24 @@ class VTKSliceView(QWidget):
             pd.SetPoints(points)
             pd.SetLines(lines)
 
+            # Clipping planes: two parallel planes forming a slab
+            plane1 = vtkPlane()
+            plane2 = vtkPlane()
+            if self._orientation == "axial":
+                plane1.SetNormal(0, 0, 1)
+                plane2.SetNormal(0, 0, -1)
+            elif self._orientation == "coronal":
+                plane1.SetNormal(0, 1, 0)
+                plane2.SetNormal(0, -1, 0)
+            else:  # sagittal
+                plane1.SetNormal(1, 0, 0)
+                plane2.SetNormal(-1, 0, 0)
+
             # White outline (wider, behind)
             mapper_bg = vtkPolyDataMapper()
             mapper_bg.SetInputData(pd)
+            mapper_bg.AddClippingPlane(plane1)
+            mapper_bg.AddClippingPlane(plane2)
             actor_bg = vtkActor()
             actor_bg.SetMapper(mapper_bg)
             actor_bg.GetProperty().SetColor(1.0, 1.0, 1.0)
@@ -1046,6 +1098,8 @@ class VTKSliceView(QWidget):
             # Vessel-colored line (on top)
             mapper_fg = vtkPolyDataMapper()
             mapper_fg.SetInputData(pd)
+            mapper_fg.AddClippingPlane(plane1)
+            mapper_fg.AddClippingPlane(plane2)
             actor_fg = vtkActor()
             actor_fg.SetMapper(mapper_fg)
             actor_fg.GetProperty().SetColor(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255)
@@ -1054,7 +1108,36 @@ class VTKSliceView(QWidget):
             self._vtk_renderer.AddActor(actor_fg)
             self._overlay_actors.append(actor_fg)
 
+            self._centerline_mappers.extend([
+                (mapper_bg, plane1, plane2),
+                (mapper_fg, plane1, plane2),
+            ])
+
+        self._update_centerline_clip()
         self._render()
+
+    def _update_centerline_clip(self) -> None:
+        """Update centerline clipping planes to match the current slice."""
+        if not hasattr(self, "_centerline_mappers") or not self._centerline_mappers:
+            return
+        slab_mm = 2.0
+        if self._orientation == "axial":
+            pos_mm = self._current_slice * self._spacing[0]
+        elif self._orientation == "coronal":
+            pos_mm = self._current_slice * self._spacing[1]
+        else:
+            pos_mm = self._current_slice * self._spacing[2]
+
+        for _mapper, p1, p2 in self._centerline_mappers:
+            if self._orientation == "axial":
+                p1.SetOrigin(0, 0, pos_mm - slab_mm)
+                p2.SetOrigin(0, 0, pos_mm + slab_mm)
+            elif self._orientation == "coronal":
+                p1.SetOrigin(0, pos_mm - slab_mm, 0)
+                p2.SetOrigin(0, pos_mm + slab_mm, 0)
+            else:
+                p1.SetOrigin(pos_mm - slab_mm, 0, 0)
+                p2.SetOrigin(pos_mm + slab_mm, 0, 0)
 
     def set_contour_overlay(self, contour_results_dict: dict) -> None:
         """Show vessel wall contours in white (Horos style).

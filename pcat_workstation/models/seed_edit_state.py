@@ -219,9 +219,28 @@ class SeedEditState(QObject):
             entry["waypoints"][index] = list(new_pos_ijk)
 
     def add_waypoint(self, vessel: str, pos_ijk: list) -> None:
-        """Append a waypoint to *vessel* and recompute its centerline."""
+        """Insert a waypoint after the selected seed (or append at end).
+
+        Matches the old seed_editor behavior: if a seed is selected,
+        the new waypoint is inserted right after it in the list.
+        """
         self.push_history()
-        self.seeds[vessel]["waypoints"].append(list(pos_ijk))
+        wps = self.seeds[vessel]["waypoints"]
+        has_ostium = self.seeds[vessel]["ostium"] is not None
+
+        if (self._selected_vessel == vessel
+                and self.selected_idx is not None
+                and self.selected_idx >= 0):
+            # Insert after the selected waypoint
+            insert_idx = self.selected_idx + 1
+            insert_idx = max(0, min(insert_idx, len(wps)))
+            wps.insert(insert_idx, list(pos_ijk))
+        elif self._selected_vessel == vessel and self._selected_type == "ostium":
+            # Selected the ostium → insert as first waypoint
+            wps.insert(0, list(pos_ijk))
+        else:
+            wps.append(list(pos_ijk))
+
         self.recompute_centerline(vessel)
         self.seeds_changed.emit(vessel)
 
@@ -308,7 +327,12 @@ class SeedEditState(QObject):
     # ------------------------------------------------------------------
 
     def recompute_centerline(self, vessel: str) -> None:
-        """Refit the spline centerline for *vessel* from its seeds."""
+        """Refit the spline centerline for *vessel* from its seeds.
+
+        This is a visual guide through the seed points. The real
+        anatomy-aware centerline (FMM + vesselness) is computed when the
+        pipeline runs.
+        """
         entry = self.seeds.get(vessel)
         if entry is None:
             self.centerlines[vessel] = None

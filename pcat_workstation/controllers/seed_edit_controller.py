@@ -121,8 +121,18 @@ class SeedEditController(QObject):
                 self._dragging = False
                 self._drag_vessel = ""  # no drag on first click
         else:
-            # Empty space → deselect only (no crosshair navigation)
-            self._state.clear_selection()
+            # Empty space: place ostium if none exists, otherwise just deselect.
+            # Waypoints are added via Enter key (like the old seed_editor).
+            entry = self._state.seeds.get(vessel, {})
+            if entry.get("ostium") is None:
+                # No ostium yet → place ostium here
+                self._state.push_history()
+                self._state.seeds[vessel]["ostium"] = voxel.tolist()
+                self._state.recompute_centerline(vessel)
+                self._state.seeds_changed.emit(vessel)
+                self.refresh_all_views()
+            else:
+                self._state.clear_selection()
             self._dragging = False
             self._drag_vessel = ""
 
@@ -186,10 +196,13 @@ class SeedEditController(QObject):
         * Backspace/Delete — delete selected waypoint
         * Ctrl+Z — undo
         * Ctrl+Shift+Z / Ctrl+Y — redo
-        * Left/Right arrows — cycle through vessels
+        * Left/Right arrows — cycle through seeds in current vessel
         """
-        ctrl = bool(modifiers & Qt.ControlModifier)
-        shift = bool(modifiers & Qt.ShiftModifier)
+        # modifiers is int (.value), Qt enums may also be int or enum
+        _ctrl = Qt.ControlModifier.value if hasattr(Qt.ControlModifier, "value") else int(Qt.ControlModifier)
+        _shift = Qt.ShiftModifier.value if hasattr(Qt.ShiftModifier, "value") else int(Qt.ShiftModifier)
+        ctrl = bool(modifiers & _ctrl)
+        shift = bool(modifiers & _shift)
 
         if key in (Qt.Key_Return, Qt.Key_Enter):
             self._add_waypoint_at_crosshair(view)
@@ -207,10 +220,10 @@ class SeedEditController(QObject):
             self._state.redo()
 
         elif key == Qt.Key_Left:
-            self._cycle_vessel(-1)
+            self._cycle_seed(-1)
 
         elif key == Qt.Key_Right:
-            self._cycle_vessel(1)
+            self._cycle_seed(1)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -227,18 +240,52 @@ class SeedEditController(QObject):
         if vessel:
             self._state.add_waypoint(vessel, voxel.tolist())
 
-    def _cycle_vessel(self, direction: int) -> None:
-        """Cycle through vessels in the seed dict."""
-        vessels = list(self._state.seeds.keys())
-        if not vessels:
+    def _cycle_seed(self, direction: int) -> None:
+        """Cycle selection through seeds (ostium + waypoints) in the current vessel."""
+        vessel = self._state.current_vessel
+        if not vessel:
             return
-        try:
-            idx = vessels.index(self._state.current_vessel)
-        except ValueError:
-            idx = 0
-        idx = (idx + direction) % len(vessels)
-        self._state.current_vessel = vessels[idx]
-        self._state.clear_selection()
+        all_seeds = self._get_all_seeds(vessel)
+        if not all_seeds:
+            return
+
+        # Determine current position in the flat list
+        current_flat = self._selected_to_flat_index()
+        if current_flat is None:
+            new_flat = 0
+        else:
+            new_flat = max(0, min(len(all_seeds) - 1, current_flat + direction))
+
+        # Convert flat index back to (type, index)
+        has_ostium = self._state.seeds[vessel]["ostium"] is not None
+        if has_ostium and new_flat == 0:
+            self._state.select(vessel, "ostium", 0)
+        else:
+            wp_idx = new_flat - (1 if has_ostium else 0)
+            self._state.select(vessel, "waypoint", wp_idx)
+
+        self.refresh_all_views()
+
+    def _get_all_seeds(self, vessel: str) -> list:
+        """Return flat list of all seed positions [ostium, wp0, wp1, ...] for vessel."""
+        entry = self._state.seeds.get(vessel, {})
+        pts = []
+        if entry.get("ostium") is not None:
+            pts.append(entry["ostium"])
+        pts.extend(entry.get("waypoints", []))
+        return pts
+
+    def _selected_to_flat_index(self) -> int | None:
+        """Convert current selection to flat index in all_seeds list."""
+        vessel = self._state.current_vessel
+        if not self._state.selected_vessel or self._state.selected_vessel != vessel:
+            return None
+        has_ostium = self._state.seeds[vessel]["ostium"] is not None
+        if self._state.selected_type == "ostium":
+            return 0
+        elif self._state.selected_type == "waypoint" and self._state.selected_idx is not None:
+            return self._state.selected_idx + (1 if has_ostium else 0)
+        return None
 
     def refresh_all_views(self) -> None:
         """Rebuild seed overlays on all views from state."""

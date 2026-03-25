@@ -59,6 +59,11 @@ class _ChartCanvas(FigureCanvasQTAgg):
         self.draw()
 
 
+class _PolarChartCanvas(_ChartCanvas):
+    """Reuse standard Cartesian canvas for angular asymmetry bar chart."""
+    pass
+
+
 class AnalysisDashboard(QWidget):
     """Collapsible bottom panel with HU histogram and radial profile charts."""
 
@@ -109,6 +114,8 @@ class AnalysisDashboard(QWidget):
         self._profile_canvas = _ChartCanvas()
         self._tabs.addTab(self._histogram_canvas, "HU Histogram")
         self._tabs.addTab(self._profile_canvas, "Radial Profile")
+        self._polar_canvas = _PolarChartCanvas()
+        self._tabs.addTab(self._polar_canvas, "Angular Asymmetry")
         c_lay.addWidget(self._tabs)
         root.addWidget(self._content)
 
@@ -185,7 +192,65 @@ class AnalysisDashboard(QWidget):
         canvas.draw()
         self._tabs.setCurrentWidget(canvas)
 
+    def plot_angular_asymmetry(self, octant_data: dict, vessel_name: str):
+        """Plot 8-spoke polar chart of per-octant FAI values.
+
+        Parameters
+        ----------
+        octant_data : dict with "sectors" (list of dicts with "angle_deg", "hu_mean", "fai_risk")
+                      and "sector_labels" (list of str)
+        vessel_name : e.g., "LAD"
+        """
+        canvas = self._polar_canvas
+        ax = canvas.ax
+        ax.cla()
+        canvas._apply_theme()
+
+        sectors = octant_data.get("sectors", [])
+        labels = octant_data.get("sector_labels", [])
+        if not sectors:
+            canvas.draw()
+            return
+
+        n = len(sectors)
+        values = [s["hu_mean"] for s in sectors]
+        risks = [s.get("fai_risk", "LOW") for s in sectors]
+
+        # Skip if all NaN
+        valid = [v for v in values if not np.isnan(v)]
+        if not valid:
+            canvas.draw()
+            return
+
+        # Replace NaN with 0 for display
+        display_vals = [v if not np.isnan(v) else 0.0 for v in values]
+
+        # Color each bar: red if HIGH risk, green if LOW
+        colors = ["#ff453a" if r == "HIGH" else "#30d158" for r in risks]
+
+        x = np.arange(n)
+        ax.bar(x, display_vals, color=colors, alpha=0.8,
+               edgecolor="#555", linewidth=0.5)
+
+        # Risk threshold line
+        ax.axhline(_RISK_THRESHOLD, linestyle="--", color="#888", linewidth=1)
+        ax.text(n - 0.5, _RISK_THRESHOLD + 2, f"{_RISK_THRESHOLD} HU",
+                fontsize=9, color="#888")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=8, rotation=45, ha="right")
+        ax.set_ylabel("Mean HU", fontsize=_MPL_STYLE["font_size"])
+        ax.set_title(
+            f"{vessel_name} Angular FAI Asymmetry",
+            fontsize=_MPL_STYLE["font_size"] + 1,
+            color=_MPL_STYLE["text_color"],
+        )
+        canvas.fig.tight_layout(pad=1.5)
+        canvas.draw()
+        self._tabs.setCurrentWidget(canvas)
+
     def clear(self):
         """Clear all plots."""
         self._histogram_canvas.clear_plot()
         self._profile_canvas.clear_plot()
+        self._polar_canvas.clear_plot()

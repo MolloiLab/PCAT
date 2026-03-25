@@ -24,7 +24,7 @@ class MPRPanel(QWidget):
         self._linking = False
         self._volume = None
         self._spacing = None
-        self._contour_results: dict = {}  # vessel -> ContourResult
+        self._contour_results: dict = {}  # legacy, kept for backward compat
         self._build_ui()
         self._connect_signals()
 

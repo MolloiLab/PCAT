@@ -5,16 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
-
-# Ordered pipeline stages
-PIPELINE_STAGES = [
-    "import",
-    "seeds",
-    "centerlines",
-    "contours",
-    "pcat_voi",
-    "statistics",
-]
+from pcat_workstation.app.config import PIPELINE_STAGES
 
 
 class PatientSession(QObject):
@@ -210,6 +201,7 @@ class PatientSession(QObject):
         session.stage_status.update(data.get("stage_status", {}))
         # Backward compat: drop vesselness from old session.json files
         session.stage_status.pop("vesselness", None)
+        session.stage_status.pop("contours", None)
         session.vessel_stats = data.get("vessel_stats", {})
         session.seeds_data = data.get("seeds_data")
 

@@ -137,8 +137,8 @@ def _draw_vessel_page(pdf, vessel, stats, cpr_image, hu_values):
         f"Mean HU: {stats.get('hu_mean', 0.0):.1f}",
         f"Std HU: {stats.get('hu_std', 0.0):.1f}",
         f"Fat fraction: {stats.get('fat_fraction', 0.0) * 100:.1f}%",
-        f"VOI voxels: {stats.get('voi_voxels', 0):,}",
-        f"Fat voxels: {stats.get('fat_voxels', 0):,}",
+        f"VOI voxels: {stats.get('n_voi_voxels', stats.get('voi_voxels', 0)):,}",
+        f"Fat voxels: {stats.get('n_fat_voxels', stats.get('fat_voxels', 0)):,}",
         f"Risk: {stats.get('fai_risk', 'LOW')}",
     ]
     for i, line in enumerate(text_lines):

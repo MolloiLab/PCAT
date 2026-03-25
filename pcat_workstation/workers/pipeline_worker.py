@@ -1,8 +1,11 @@
 """QThread worker that runs the full PCAT pipeline in the background.
 
-Wraps the pipeline modules (auto_seeds, centerline, contour_extraction,
-pcat_segment) and emits per-stage progress signals so the GUI stays
-responsive.
+Wraps the pipeline modules (centerline FMM+vesselness auto-trace, tubular VOI,
+pcat_segment FAI + angular asymmetry) and emits per-stage progress signals so
+the GUI stays responsive.
+
+Pipeline flow:
+  Manual ostium seed → FMM+Vesselness auto-trace centerline → tubular VOI → FAI + angular asymmetry
 """
 
 from __future__ import annotations
@@ -85,7 +88,6 @@ class PipelineWorker(QThread):
 
     seeds_ready = Signal(object)
     centerlines_ready = Signal(object)
-    contours_ready = Signal(object)
     cpr_ready = Signal(str, object, float)  # (vessel_name, cpr_image_2d, row_extent_mm)
     cpr_frame_ready = Signal(str, object)  # (vessel, dict with N_frame, B_frame, positions_mm, arclengths)
     radii_ready = Signal(object)  # {vessel: radii_mm_array}
@@ -108,13 +110,11 @@ class PipelineWorker(QThread):
 
         # Intermediate results – accessible after completion
         self.vessel_centerlines: Dict[str, np.ndarray] = {}
-        self.vessel_contour_results: Dict[str, Any] = {}
         self.vessel_voi_masks: Dict[str, np.ndarray] = {}
         self.vessel_stats: Dict[str, Any] = {}
 
         # Private helpers
-        self._seeds_path: Optional[Path] = None
-        self._centerlines_npz: Optional[Path] = None
+        self._seed_points: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Stage bookkeeping
@@ -147,7 +147,7 @@ class PipelineWorker(QThread):
 
     def run(self) -> None:  # noqa: C901 – sequential pipeline stages
         """Execute the pipeline stages sequentially."""
-        # Redirect stdout/stderr so that TotalSegmentator's print() output
+        # Redirect stdout/stderr so that pipeline print() output
         # (progress bars, status messages) appears in the Progress panel.
         old_stdout, old_stderr = sys.stdout, sys.stderr
         tee_out = _TeeWriter(old_stdout, self._emit)
@@ -162,25 +162,22 @@ class PipelineWorker(QThread):
 
     def _run_pipeline(self) -> None:  # noqa: C901
         """Internal pipeline execution (stdout/stderr already tee'd)."""
-        # Late imports to avoid import-time side effects (TotalSegmentator,
-        # matplotlib, etc.) and keep the GUI import graph lightweight.
+        # Late imports to avoid import-time side effects and keep the GUI
+        # import graph lightweight.
         try:
-            from pipeline.auto_seeds import generate_seeds
             from pipeline.centerline import (
                 VESSEL_CONFIGS,
                 clip_centerline_by_arclength,
                 estimate_vessel_radii,
-                load_seeds,
             )
-            from pipeline.contour_extraction import (
-                build_contour_based_voi,
-                extract_vessel_contours,
-            )
-            from pipeline.pcat_segment import compute_pcat_stats
+            from pipeline.pcat_segment import build_tubular_voi, compute_pcat_stats
+            from pipeline.visualize import _compute_cpr_data
             from pcat_workstation.app.config import (
                 VOI_MODE,
                 CRISP_GAP_MM,
                 CRISP_RING_MM,
+                DEFAULT_PCAT_SCALE,
+                N_ANGULAR_SECTORS,
             )
         except Exception as exc:
             self.pipeline_failed.emit(
@@ -210,49 +207,84 @@ class PipelineWorker(QThread):
             self.stage_completed.emit("import", time.time() - t0)
 
         # ── Stage: seeds ─────────────────────────────────────────────
+        # Seeds come from user interaction (SeedEditState), not auto-generation.
+        # This stage validates that seeds exist in the session.
         if not self._should_skip("seeds"):
             t0 = time.time()
             self.stage_started.emit("seeds")
             self.session.set_stage_status("seeds", "running")
             try:
-                self._emit("Generating coronary seeds via TotalSegmentator...")
-                seeds_json = session_dir / f"{prefix}_seeds.json"
-                if not seeds_json.exists():
-                    generate_seeds(
-                        dicom_dir=self.session.dicom_dir,
-                        output_json=seeds_json,
-                    )
-                self._seeds_path = seeds_json
-                self.session.set_stage_status("seeds", "complete")
-                self.stage_completed.emit("seeds", time.time() - t0)
+                seeds_data = self.session.seeds_data
+                # SeedEditState saves as {"flat": {...}, "extended": {...}}
+                # Extract the extended format if present
+                if isinstance(seeds_data, dict) and "extended" in seeds_data:
+                    seeds_data = seeds_data["extended"]
+                if not seeds_data:
+                    # Check for seeds JSON file as fallback
+                    seeds_json = session_dir / f"{prefix}_seeds.json"
+                    if seeds_json.exists():
+                        import json
+                        seeds_data = json.loads(seeds_json.read_text())
 
-                import json
-                seeds_data_raw = json.loads(self._seeds_path.read_text())
+                if not seeds_data:
+                    self._handle_stage_failure("seeds", RuntimeError(
+                        "No seeds found. Place ostium seeds manually before running."
+                    ))
+                    self.pipeline_failed.emit(
+                        "No seeds found. Place ostium seeds manually before running."
+                    )
+                    return
+
                 seed_points = {}
                 for v in self.vessels:
                     for key in (v, v.upper(), v.replace("x", "X")):
-                        if key in seeds_data_raw and seeds_data_raw[key].get("ostium_ijk"):
-                            entry = seeds_data_raw[key]
-                            ijk = entry["ostium_ijk"]
-                            if all(c is not None for c in ijk):
+                        if key in seeds_data:
+                            entry = seeds_data[key]
+                            ostium = entry.get("ostium") or entry.get("ostium_ijk")
+                            if ostium and all(c is not None for c in ostium):
                                 seed_points[v] = {
-                                    "ostium": ijk,
-                                    "waypoints": entry.get("waypoints_ijk", []),
+                                    "ostium": ostium,
+                                    "waypoints": entry.get("waypoints", entry.get("waypoints_ijk", [])),
                                 }
                                 break
-                if seed_points:
-                    vessels_found = list(seed_points.keys())
-                    self._emit(f"Seeds found: {', '.join(vessels_found)}")
-                    self.seeds_ready.emit(seed_points)
-                else:
-                    self._emit("Warning: no coronary seeds detected — check DICOM is contrast-enhanced CCTA")
+
+                if not seed_points:
+                    self._handle_stage_failure("seeds", RuntimeError(
+                        "No valid ostium seeds found. Place seeds for at least one vessel."
+                    ))
+                    self.pipeline_failed.emit(
+                        "No valid ostium seeds found. Place seeds for at least one vessel."
+                    )
+                    return
+
+                self._seed_points = seed_points
+                vessels_found = list(seed_points.keys())
+                self._emit(f"Seeds validated: {', '.join(vessels_found)}")
+                self.seeds_ready.emit(seed_points)
+                self.session.set_stage_status("seeds", "complete")
+                self.stage_completed.emit("seeds", time.time() - t0)
             except Exception as exc:
                 self._handle_stage_failure("seeds", exc)
-                self.pipeline_failed.emit(f"Seeds generation failed: {exc}")
+                self.pipeline_failed.emit(f"Seed validation failed: {exc}")
                 return
         else:
-            # Locate existing seeds file for later stages
-            self._seeds_path = session_dir / f"{prefix}_seeds.json"
+            # Load existing seeds for later stages
+            self._seed_points = {}
+            seeds_data = self.session.seeds_data
+            if isinstance(seeds_data, dict) and "extended" in seeds_data:
+                seeds_data = seeds_data["extended"]
+            if seeds_data:
+                for v in self.vessels:
+                    for key in (v, v.upper(), v.replace("x", "X")):
+                        if key in seeds_data:
+                            entry = seeds_data[key]
+                            ostium = entry.get("ostium") or entry.get("ostium_ijk")
+                            if ostium and all(c is not None for c in ostium):
+                                self._seed_points[v] = {
+                                    "ostium": ostium,
+                                    "waypoints": entry.get("waypoints", entry.get("waypoints_ijk", [])),
+                                }
+                                break
 
         # ── stop_after check ──────────────────────────────────────────
         if self.stop_after == "seeds" and self.session.stage_status.get("seeds") == "complete":
@@ -262,191 +294,111 @@ class PipelineWorker(QThread):
             return
 
         # ── Stage: centerlines ───────────────────────────────────────
+        # Manual centerline: cubic spline through user-placed seeds.
+        # No FMM or vesselness — the user's clicks ARE the centerline.
         if not self._should_skip("centerlines"):
             t0 = time.time()
             self.stage_started.emit("centerlines")
             self.session.set_stage_status("centerlines", "running")
             try:
-                # Load centerline NPZ (previously the vesselness stage)
-                self._debug("Loading centerlines from seed data...")
-                raw_dir = session_dir / "raw"
-                raw_dir.mkdir(parents=True, exist_ok=True)
-                npz_path = raw_dir / f"{prefix}_centerlines.npz"
-                if not npz_path.exists():
-                    seeds_json = self._seeds_path or (
-                        session_dir / f"{prefix}_seeds.json"
-                    )
-                    if not seeds_json.exists():
-                        generate_seeds(
-                            dicom_dir=self.session.dicom_dir,
-                            output_json=seeds_json,
-                        )
-                    self._seeds_path = seeds_json
-                self._centerlines_npz = npz_path if npz_path.exists() else None
-
-                seeds_data = load_seeds(self._seeds_path)
+                from pcat_workstation.models.seed_edit_state import _fit_spline_centerline
 
                 for vessel in self.vessels:
-                    self._emit(f"Processing {vessel} centerline...")
-                    if vessel not in seeds_data:
-                        self._emit(f"  {vessel}: not detected — skipping")
+                    if vessel not in self._seed_points:
                         continue
 
-                    vsd = seeds_data[vessel]
-                    ostium = vsd.get("ostium_ijk")
-                    if not ostium or any(v is None for v in ostium):
-                        self._emit(f"  {vessel}: no valid ostium — skipping")
+                    sp = self._seed_points[vessel]
+                    ostium = sp["ostium"]
+                    waypoints = sp.get("waypoints", [])
+
+                    # Build ordered seed list: ostium → waypoints
+                    ordered_seeds = [ostium] + [wp for wp in waypoints if wp]
+                    if len(ordered_seeds) < 2:
+                        self._emit(f"  {vessel}: need ostium + at least 1 waypoint — skipping")
                         continue
 
-                    # Load full centerline from NPZ
-                    centerline_full = None
-                    if self._centerlines_npz and self._centerlines_npz.exists():
-                        cl_data = np.load(
-                            str(self._centerlines_npz), allow_pickle=True
-                        )
-                        cl_key = f"{vessel}_centerline_ijk"
-                        if cl_key in cl_data:
-                            centerline_full = cl_data[cl_key]
+                    # Fit dense cubic spline through seeds (0.5mm step)
+                    self._emit(f"Fitting {vessel} spline centerline...")
+                    centerline_full = _fit_spline_centerline(
+                        ordered_seeds, spacing_mm, volume.shape, step_mm=0.5
+                    )
 
                     if centerline_full is None or len(centerline_full) < 3:
-                        self._emit(f"  {vessel}: centerline unavailable — skipping")
+                        self._emit(f"  {vessel}: spline fitting failed — skipping")
                         continue
 
+                    # Estimate radii on the FULL centerline
+                    self._emit(f"Estimating {vessel} vessel radii...")
+                    radii_full = estimate_vessel_radii(volume, centerline_full, spacing_mm)
+
+                    # Clip to proximal segment for VOI/stats measurement only
                     vcfg = VESSEL_CONFIGS.get(vessel, {})
                     start_mm = float(vcfg.get("start_mm", 0.0))
                     length_mm = float(vcfg.get("length_mm", 40.0))
-
-                    centerline = clip_centerline_by_arclength(
-                        centerline_full,
-                        spacing_mm,
-                        start_mm=start_mm,
-                        length_mm=length_mm,
+                    centerline_prox = clip_centerline_by_arclength(
+                        centerline_full, spacing_mm,
+                        start_mm=start_mm, length_mm=length_mm,
                     )
-                    if len(centerline) < 5:
-                        self._debug(
-                            f"  {vessel} clipped centerline too short "
-                            f"({len(centerline)} pts)"
-                        )
+                    radii_prox = radii_full[:len(centerline_prox)]
+
+                    if len(centerline_prox) < 5:
+                        self._debug(f"  {vessel} proximal centerline too short ({len(centerline_prox)} pts)")
                         continue
 
-                    # Estimate radii
-                    self._debug(f"  Estimating {vessel} vessel radii...")
-                    radii_mm = estimate_vessel_radii(
-                        volume, centerline, spacing_mm
-                    )
-
-                    # Store results
                     self.vessel_centerlines[vessel] = {
                         "full": centerline_full,
-                        "proximal": centerline,
-                        "radii": radii_mm,
+                        "proximal": centerline_prox,
+                        "radii_full": radii_full,
+                        "radii": radii_prox,
                     }
+                    arc_mm = len(centerline_full) * 0.5
                     self._debug(
-                        f"  {vessel}: {len(centerline)} pts, "
-                        f"mean radius {float(np.mean(radii_mm)):.2f} mm"
+                        f"  {vessel}: {len(centerline_full)} pts (~{arc_mm:.0f} mm), "
+                        f"proximal={len(centerline_prox)} pts, "
+                        f"mean radius {float(np.mean(radii_prox)):.2f} mm"
                     )
+
+                    # Generate CPR from the FULL centerline
+                    try:
+                        self._emit(f"Generating {vessel} CPR image...")
+                        cpr_vol, N_frame, B_frame, positions, arclengths, n_h, n_w = _compute_cpr_data(
+                            volume, centerline_full, spacing_mm,
+                            slab_thickness_mm=3.0,
+                            width_mm=25.0,
+                            pixels_wide=512,
+                            pixels_high=256,
+                        )
+                        self.cpr_ready.emit(vessel, cpr_vol, 25.0)
+                        self.cpr_frame_ready.emit(vessel, {
+                            "N_frame": N_frame,
+                            "B_frame": B_frame,
+                            "positions_mm": positions,
+                            "arclengths": arclengths,
+                            "volume": volume,
+                            "spacing": spacing_mm,
+                        })
+                        self._debug(f"  {vessel} CPR generated ({n_w}x{n_h})")
+                    except Exception as exc:
+                        self._emit(f"  {vessel} CPR failed: {exc}")
 
                 self.session.set_stage_status("centerlines", "complete")
                 self.stage_completed.emit("centerlines", time.time() - t0)
 
-                cl_viz = {v: d["proximal"] for v, d in self.vessel_centerlines.items()}
+                cl_viz = {v: d["full"] for v, d in self.vessel_centerlines.items()}
                 self.centerlines_ready.emit(cl_viz)
 
-                # Also emit radii for CPR cross-section VOI ring
-                radii_viz = {v: d["radii"] for v, d in self.vessel_centerlines.items()
-                             if "radii" in d}
+                radii_viz = {v: d["radii"] for v, d in self.vessel_centerlines.items() if "radii" in d}
                 if radii_viz:
                     self.radii_ready.emit(radii_viz)
             except Exception as exc:
                 self._handle_stage_failure("centerlines", exc)
-                self.pipeline_failed.emit(
-                    f"Centerline extraction failed: {exc}"
-                )
+                self.pipeline_failed.emit(f"Centerline extraction failed: {exc}")
                 return
-        else:
-            # Skipping centerlines — still need NPZ path for later stages
-            raw_dir = session_dir / "raw"
-            npz_path = raw_dir / f"{prefix}_centerlines.npz"
-            self._centerlines_npz = npz_path if npz_path.exists() else None
 
         # ── stop_after check ──────────────────────────────────────────
         if self.stop_after == "centerlines" and self.session.stage_status.get("centerlines") == "complete":
             results["vessels"] = dict(self.vessel_stats)
             self._emit("Stopped after centerlines")
-            self.pipeline_completed.emit(results)
-            return
-
-        # ── Stage: contours ──────────────────────────────────────────
-        if not self._should_skip("contours"):
-            t0 = time.time()
-            self.stage_started.emit("contours")
-            self.session.set_stage_status("contours", "running")
-
-            for vessel in self.vessels:
-                if vessel not in self.vessel_centerlines:
-                    continue
-                try:
-                    self._emit(f"Extracting {vessel} vessel wall contours...")
-                    centerline = self.vessel_centerlines[vessel]["proximal"]
-                    contour_result = extract_vessel_contours(
-                        volume,
-                        centerline,
-                        spacing_mm,
-                        vessel_name=vessel,
-                    )
-                    self.vessel_contour_results[vessel] = contour_result
-                    self._debug(
-                        f"  {vessel} contours: r_eq mean="
-                        f"{np.mean(contour_result.r_eq):.2f} mm"
-                    )
-                except Exception as exc:
-                    self.stage_failed.emit(
-                        "contours", f"{vessel}: {exc}"
-                    )
-                    self._emit(f"  {vessel} contour extraction failed: {exc}")
-
-            self.session.set_stage_status("contours", "complete")
-            self.stage_completed.emit("contours", time.time() - t0)
-
-            self.contours_ready.emit(dict(self.vessel_contour_results))
-
-            # Generate CPR images using full Horos-equivalent pipeline
-            # (Bezier spline + Bishop frame + cubic sampling + slab MIP)
-            for vessel in self.vessel_contour_results:
-                if vessel not in self.vessel_centerlines:
-                    continue
-                try:
-                    self._emit(f"Generating {vessel} CPR image...")
-                    from pipeline.visualize import _compute_cpr_data
-                    cl_ijk = self.vessel_centerlines[vessel]["proximal"]
-                    cpr_vol, N_frame, B_frame, positions, arclengths, n_h, n_w = _compute_cpr_data(
-                        volume, cl_ijk, spacing_mm,
-                        slab_thickness_mm=3.0,
-                        width_mm=25.0,
-                        pixels_wide=512,
-                        pixels_high=256,
-                    )
-                    # cpr_vol shape: (pixels_wide, pixels_high) = (arc-length, lateral)
-                    # Keep as-is: rows (axis 0) = arc-length, cols (axis 1) = lateral
-                    # This matches Horos convention: vertical = vessel length, horizontal = cross-section width
-                    cpr_img = cpr_vol
-                    self.cpr_ready.emit(vessel, cpr_img, 25.0)  # row_extent_mm
-                    # Emit Bishop frame used to generate CPR so cross-section
-                    # sampling uses the same orientation as the CPR image
-                    self.cpr_frame_ready.emit(vessel, {
-                        "N_frame": N_frame,         # (pixels_wide, 3)
-                        "B_frame": B_frame,         # (pixels_wide, 3)
-                        "positions_mm": positions,  # (pixels_wide, 3)
-                        "arclengths": arclengths,   # (pixels_wide,)
-                    })
-                    self._debug(f"  {vessel} CPR generated ({n_w}x{n_h})")
-                except Exception as exc:
-                    self._emit(f"  {vessel} CPR failed: {exc}")
-
-        # ── stop_after check ──────────────────────────────────────────
-        if self.stop_after == "contours" and self.session.stage_status.get("contours") == "complete":
-            results["vessels"] = dict(self.vessel_stats)
-            self._emit("Stopped after contours")
             self.pipeline_completed.emit(results)
             return
 
@@ -456,33 +408,27 @@ class PipelineWorker(QThread):
             self.stage_started.emit("pcat_voi")
             self.session.set_stage_status("pcat_voi", "running")
 
-            for vessel, cr in self.vessel_contour_results.items():
+            for vessel, cl_data in self.vessel_centerlines.items():
                 try:
                     self._emit(f"Building {vessel} PCAT VOI mask...")
-                    voi_mask = build_contour_based_voi(
+                    voi_mask = build_tubular_voi(
                         volume_shape=volume.shape,
-                        contours=cr.contours,
-                        centerline_mm=cr.positions_mm,
-                        N_frame=cr.N_frame,
-                        B_frame=cr.B_frame,
-                        r_eq=cr.r_eq,
+                        centerline_ijk=cl_data["proximal"],
                         spacing_mm=spacing_mm,
-                        pcat_scale=3.0,
+                        radii_mm=cl_data["radii"],
                         voi_mode=VOI_MODE,
                         crisp_gap_mm=CRISP_GAP_MM,
                         crisp_ring_mm=CRISP_RING_MM,
+                        radius_multiplier=DEFAULT_PCAT_SCALE,
                     )
                     self.vessel_voi_masks[vessel] = voi_mask
-                    self._debug(
-                        f"  {vessel} VOI: {int(voi_mask.sum()):,} voxels"
-                    )
+                    self._debug(f"  {vessel} VOI: {int(voi_mask.sum()):,} voxels")
                 except Exception as exc:
                     self.stage_failed.emit("pcat_voi", f"{vessel}: {exc}")
                     self._emit(f"  {vessel} VOI build failed: {exc}")
 
             self.session.set_stage_status("pcat_voi", "complete")
             self.stage_completed.emit("pcat_voi", time.time() - t0)
-
             self.voi_masks_ready.emit(dict(self.vessel_voi_masks))
 
         # ── stop_after check ──────────────────────────────────────────
@@ -509,6 +455,27 @@ class PipelineWorker(QThread):
                         f"fat_fraction={100*stats['fat_fraction']:.1f}%"
                     )
 
+                    # Compute angular asymmetry
+                    cl_data = self.vessel_centerlines.get(vessel)
+                    if cl_data is not None:
+                        try:
+                            from pipeline.pcat_segment import compute_angular_asymmetry
+                            octant_data = compute_angular_asymmetry(
+                                volume=volume,
+                                centerline_ijk=cl_data["proximal"],
+                                radii_mm=cl_data["radii"],
+                                spacing_mm=spacing_mm,
+                                n_sectors=N_ANGULAR_SECTORS,
+                                voi_mode=VOI_MODE,
+                                crisp_gap_mm=CRISP_GAP_MM,
+                                crisp_ring_mm=CRISP_RING_MM,
+                                radius_multiplier=DEFAULT_PCAT_SCALE,
+                            )
+                            stats["octants"] = octant_data
+                            self._emit(f"  {vessel}: angular asymmetry computed ({N_ANGULAR_SECTORS} sectors)")
+                        except Exception as ang_exc:
+                            self._emit(f"  {vessel} angular asymmetry failed: {ang_exc}")
+
                     # Compute radial profile and emit analysis data
                     try:
                         from pipeline.radial_profile import compute_radial_profile
@@ -516,17 +483,18 @@ class PipelineWorker(QThread):
                         distances_mm, mean_hu = compute_radial_profile(
                             volume, voi_mask, spacing_mm=spacing_mm,
                         )
-                        self.analysis_data_ready.emit(vessel, {
+                        analysis_payload = {
                             "hu_values": hu_values,
                             "distances_mm": distances_mm,
                             "mean_hu": mean_hu,
-                        })
+                        }
+                        if "octants" in stats:
+                            analysis_payload["octants"] = stats["octants"]
+                        self.analysis_data_ready.emit(vessel, analysis_payload)
                     except Exception as prof_exc:
                         self._emit(f"  {vessel} radial profile failed: {prof_exc}")
                 except Exception as exc:
-                    self.stage_failed.emit(
-                        "statistics", f"{vessel}: {exc}"
-                    )
+                    self.stage_failed.emit("statistics", f"{vessel}: {exc}")
                     self._emit(f"  {vessel} stats failed: {exc}")
 
             self.session.set_stage_status("statistics", "complete")

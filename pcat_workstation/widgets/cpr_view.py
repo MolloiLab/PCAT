@@ -195,30 +195,9 @@ class _CPRPanel(QWidget):
         ww, wh = self.width(), self.height()
 
         if self._root._stretched_mode:
-            # Preserve physical aspect ratio (aspect-fit)
-            vdata = self._root._current_vdata()
-            if (
-                vdata is not None
-                and vdata.cpr_arclengths is not None
-                and len(vdata.cpr_arclengths) > 1
-            ):
-                arc_total_mm = float(vdata.cpr_arclengths[-1])
-                lateral_mm = 2.0 * (vdata.row_extent_mm or 25.0)
-                # Physical aspect: height / width in mm
-                physical_aspect = arc_total_mm / lateral_mm
-                # Fit within widget preserving physical aspect
-                if physical_aspect > (wh / ww):
-                    # Height-limited
-                    sh = wh
-                    sw = wh / physical_aspect
-                else:
-                    # Width-limited
-                    sw = ww
-                    sh = ww * physical_aspect
-            else:
-                # Fallback: pixel aspect-fit
-                scale = min(ww / pw, wh / ph) if pw > 0 and ph > 0 else 1.0
-                sw, sh = pw * scale, ph * scale
+            # Curved CPR mode: preserve pixel aspect ratio (aspect-fit)
+            scale = min(ww / pw, wh / ph) if pw > 0 and ph > 0 else 1.0
+            sw, sh = pw * scale, ph * scale
         else:
             # Straightened: stretch to fill panel (independent scaling)
             sw, sh = ww, wh
@@ -227,22 +206,26 @@ class _CPRPanel(QWidget):
         y0 = (wh - sh) / 2.0
         return QRectF(x0, y0, sw, sh)
 
-    def _y_for_index(self, idx: int) -> float:
-        """Widget Y coordinate for a given arc-length index."""
+    def _x_for_index(self, idx: int) -> float:
+        """Widget X coordinate for a given arc-length index (vessel runs left-to-right)."""
         rect = self._image_rect()
         if self._n_positions <= 1:
-            return rect.top() + rect.height() / 2.0
+            return rect.left() + rect.width() / 2.0
         frac = idx / (self._n_positions - 1)
-        return rect.top() + frac * rect.height()
+        return rect.left() + frac * rect.width()
 
-    def _index_for_y(self, y: float) -> int:
-        """Arc-length index for a widget Y coordinate."""
+    def _index_for_x(self, x: float) -> int:
+        """Arc-length index for a widget X coordinate."""
         rect = self._image_rect()
-        if rect.height() <= 0 or self._n_positions <= 1:
+        if rect.width() <= 0 or self._n_positions <= 1:
             return 0
-        frac = (y - rect.top()) / rect.height()
+        frac = (x - rect.left()) / rect.width()
         frac = max(0.0, min(1.0, frac))
         return int(round(frac * (self._n_positions - 1)))
+
+    # Keep legacy names as aliases for any external callers
+    _y_for_index = _x_for_index
+    _index_for_y = _index_for_x
 
     # ── paint ────────────────────────────────────────────────────────
 
@@ -263,13 +246,13 @@ class _CPRPanel(QWidget):
         # Draw CPR image
         p.drawPixmap(rect.toRect(), self._pixmap)
 
-        # Vertical dashed centerline
+        # Horizontal dashed centerline (lateral midline)
         pen_cl = QPen(QColor(255, 255, 255, 128), 0.8, Qt.DashLine)
         p.setPen(pen_cl)
-        cx = rect.left() + rect.width() / 2.0
-        p.drawLine(QPointF(cx, rect.top()), QPointF(cx, rect.bottom()))
+        cy = rect.top() + rect.height() / 2.0
+        p.drawLine(QPointF(rect.left(), cy), QPointF(rect.right(), cy))
 
-        # Arc-length tick marks on left edge
+        # Arc-length tick marks on top edge
         self._draw_arc_ticks(p, rect)
 
         # Vessel wall boundaries (green solid)
@@ -278,7 +261,7 @@ class _CPRPanel(QWidget):
         # PCAT boundary (green dashed)
         self._draw_pcat_boundary(p, rect)
 
-        # Needle lines: A (yellow), B (cyan, main), C (yellow)
+        # Needle lines (vertical): A (yellow), B (cyan, main), C (yellow)
         if self._n_positions > 0:
             idx_a = max(0, self._needle_idx - self._needle_interval)
             idx_b = self._needle_idx
@@ -289,13 +272,13 @@ class _CPRPanel(QWidget):
                 (idx_b, QColor("#00ffcc"), "B"),
                 (idx_c, QColor("#ffee00"), "C"),
             ]:
-                ny = self._y_for_index(idx)
+                nx = self._x_for_index(idx)
                 pen = QPen(color, 1.6)
                 p.setPen(pen)
-                p.drawLine(QPointF(rect.left(), ny), QPointF(rect.right(), ny))
-                # Label at right edge
+                p.drawLine(QPointF(nx, rect.top()), QPointF(nx, rect.bottom()))
+                # Label at top
                 p.setFont(QFont("Helvetica", 9, QFont.Weight.Bold))
-                p.drawText(QPointF(rect.right() - 14, ny - 3), label)
+                p.drawText(QPointF(nx + 3, rect.top() + 12), label)
 
         p.end()
 
@@ -399,23 +382,23 @@ class _CPRPanel(QWidget):
     def mousePressEvent(self, ev: QMouseEvent) -> None:
         if ev.button() == Qt.LeftButton:
             if self._n_positions > 0:
-                y = ev.position().y()
-                # Check proximity to each line (within 8 pixels)
+                x = ev.position().x()
+                # Check proximity to each vertical needle line (within 8 pixels)
                 idx_a = max(0, self._needle_idx - self._needle_interval)
                 idx_b = self._needle_idx
                 idx_c = min(self._n_positions - 1, self._needle_idx + self._needle_interval)
                 lines = {
-                    "A": self._y_for_index(idx_a),
-                    "B": self._y_for_index(idx_b),
-                    "C": self._y_for_index(idx_c),
+                    "A": self._x_for_index(idx_a),
+                    "B": self._x_for_index(idx_b),
+                    "C": self._x_for_index(idx_c),
                 }
-                closest = min(lines.items(), key=lambda kv: abs(kv[1] - y))
-                if abs(closest[1] - y) < 8:
+                closest = min(lines.items(), key=lambda kv: abs(kv[1] - x))
+                if abs(closest[1] - x) < 8:
                     self._dragging_line = closest[0]
                 else:
                     # Click not near any line - move B to click position
                     self._dragging_line = None
-                    idx = self._index_for_y(y)
+                    idx = self._index_for_x(x)
                     self.needle_index_changed.emit(idx)
         elif ev.button() == Qt.RightButton:
             self._right_dragging = True
@@ -431,7 +414,7 @@ class _CPRPanel(QWidget):
             self._last_drag_pos = pos
             self.wl_drag.emit(dx, dy)
         elif self._dragging_line and ev.buttons() & Qt.LeftButton:
-            idx = self._index_for_y(ev.position().y())
+            idx = self._index_for_x(ev.position().x())
             if self._dragging_line == "B":
                 self.needle_index_changed.emit(idx)
             elif self._dragging_line == "A":
@@ -455,7 +438,9 @@ class _CPRPanel(QWidget):
         super().mouseReleaseEvent(ev)
 
     def wheelEvent(self, ev: QWheelEvent) -> None:
-        if ev.modifiers() & Qt.ControlModifier:
+        mods = ev.modifiers()
+        ctrl_meta = Qt.ControlModifier | Qt.MetaModifier
+        if mods & ctrl_meta:
             # Ctrl+scroll: change interval between A, B, C lines
             delta = 2 if ev.angleDelta().y() > 0 else -2
             self._needle_interval = max(1, self._needle_interval + delta)
@@ -737,7 +722,7 @@ class CPRView(QWidget):
         self._rotation_label.setStyleSheet("color: #cccccc; font-size: 11px;")
         toolbar_layout.addWidget(self._rotation_label)
 
-        # Straightened / Stretched toggle
+        # Straightened / Curved toggle
         self._stretched_mode = False
         self._straightened_btn = QRadioButton("Straightened")
         self._straightened_btn.setChecked(True)
@@ -822,6 +807,11 @@ class CPRView(QWidget):
         vd.cpr_B_frame = frame_data["B_frame"]
         vd.cpr_positions_mm = frame_data["positions_mm"]
         vd.cpr_arclengths = frame_data["arclengths"]
+        # Volume reference for cross-section sampling (new pipeline, no contour stage)
+        if "volume" in frame_data and frame_data["volume"] is not None:
+            vd.volume = frame_data["volume"]
+        if "spacing" in frame_data and frame_data["spacing"] is not None:
+            vd.spacing = np.asarray(frame_data["spacing"], dtype=np.float64)
         # Store the original (unrotated) Bishop frame for interactive rotation
         vd._cpr_N_frame_orig = frame_data["N_frame"].copy()
         vd._cpr_B_frame_orig = frame_data["B_frame"].copy()
@@ -1006,10 +996,10 @@ class CPRView(QWidget):
     # ── CPR mode toggle ────────────────────────────────────────────
 
     def _on_cpr_mode_changed(self, id: int, checked: bool) -> None:
-        """Switch between Straightened (fill panel) and Stretched (preserve aspect)."""
+        """Switch between Straightened and Stretched CPR."""
         if checked:
             self._stretched_mode = (id == 1)
-            self._cpr_panel.update()
+            self._refresh_cpr()
 
     # ── Refresh rendering ────────────────────────────────────────────
 
@@ -1019,14 +1009,115 @@ class CPRView(QWidget):
             self._cpr_panel.set_pixmap(None, 0)
             return
 
-        img = vd.cpr_image
-        gray = _apply_wl(img, self._window, self._level)
+        if self._stretched_mode:
+            # Curved CPR: project centerline onto a 2D plane
+            img_display = self._build_curved_cpr(vd)
+            if img_display is None:
+                img_display = vd.cpr_image.T  # fallback to straightened
+        else:
+            # Straightened: transpose so vessel runs left-to-right
+            img_display = vd.cpr_image.T
+
+        gray = _apply_wl(img_display, self._window, self._level)
         qimg = _gray_to_qimage(gray)
         pm = QPixmap.fromImage(qimg)
 
-        n_pos = img.shape[0]
+        n_pos = vd.cpr_image.shape[0]  # arc-length positions
         self._cpr_panel.set_pixmap(pm, n_pos)
         self._cpr_panel.set_needle(self._needle_idx)
+
+    def _build_curved_cpr(self, vd) -> "np.ndarray | None":
+        """Build curved CPR: project 3D centerline path onto coronal plane.
+
+        Instead of straightening the vessel, sample the volume along the
+        actual 3D vessel path projected onto the coronal (X-Z) plane.
+        The result preserves the vessel's natural curvature.
+        """
+        if vd.volume is None or vd.cpr_positions_mm is None:
+            return None
+
+        import numpy as np
+        from scipy.ndimage import map_coordinates
+
+        positions = vd.cpr_positions_mm  # (N, 3) — mm coordinates along centerline
+        N_frame = vd.cpr_N_frame  # (N, 3) — normal vectors
+        spacing = vd.spacing
+        if positions is None or N_frame is None or spacing is None:
+            return None
+
+        n_arc = len(positions)
+        half_width_mm = vd.row_extent_mm or 25.0
+        n_lateral = 256
+
+        # For each arc-length position, sample perpendicular to the vessel
+        # using the normal vector (same as straightened CPR) but lay the
+        # result out following the projected centerline path.
+        lat_offsets = np.linspace(-half_width_mm, half_width_mm, n_lateral)
+
+        # Sample the straightened CPR data (already computed)
+        # Then warp it to follow the projected centerline shape.
+        # The simplest curved CPR: use the straightened data but render
+        # it along the projected 2D path of the centerline.
+
+        # Project centerline onto X-Z plane (coronal projection)
+        pos_vox = positions / spacing  # (N, 3) in voxel coords [z, y, x]
+
+        # Determine output image size from projected bounding box
+        x_proj = pos_vox[:, 2]  # x coordinate
+        z_proj = pos_vox[:, 0]  # z coordinate
+
+        # Output image: rows = Z range, cols = X range
+        margin_vox = int(half_width_mm / float(spacing[2])) + 5
+        x_min = max(0, int(np.floor(x_proj.min())) - margin_vox)
+        x_max = min(vd.volume.shape[2] - 1, int(np.ceil(x_proj.max())) + margin_vox)
+        z_min = max(0, int(np.floor(z_proj.min())) - margin_vox)
+        z_max = min(vd.volume.shape[0] - 1, int(np.ceil(z_proj.max())) + margin_vox)
+
+        out_h = z_max - z_min + 1
+        out_w = x_max - x_min + 1
+        if out_h < 10 or out_w < 10:
+            return None
+
+        # Build curved CPR by taking a thick-slab MIP along Y at each (X, Z)
+        # centered on the vessel's Y position
+        slab_vox = max(1, int(half_width_mm / float(spacing[1])))
+
+        # For each arc-length position, get the Y center from the centerline
+        # Then build a thin-slab coronal projection
+        from scipy.interpolate import interp1d
+
+        # Map projected X,Z positions to Y positions (vessel depth)
+        # Create a lookup: for each (x, z) pixel, find the nearest centerline
+        # point and use its Y value for the MIP center
+        curved_img = np.full((out_h, out_w), np.nan, dtype=np.float32)
+
+        # Simple approach: for each centerline point, sample a column of voxels
+        # perpendicular to the viewing direction (Y axis)
+        y_centers = pos_vox[:, 1]  # Y coordinate of vessel at each arc position
+
+        for i in range(n_arc):
+            xi = int(round(x_proj[i])) - x_min
+            zi = int(round(z_proj[i])) - z_min
+            y_c = int(round(y_centers[i]))
+
+            if 0 <= xi < out_w and 0 <= zi < out_h:
+                # MIP in Y direction centered on vessel
+                y_lo = max(0, y_c - slab_vox)
+                y_hi = min(vd.volume.shape[1], y_c + slab_vox + 1)
+                slab = vd.volume[int(round(z_proj[i])), y_lo:y_hi, int(round(x_proj[i]))]
+                if len(slab) > 0:
+                    curved_img[zi, xi] = np.max(slab)
+
+        # Fill gaps with nearest-neighbor interpolation
+        from scipy.ndimage import maximum_filter
+        mask = np.isnan(curved_img)
+        if mask.any() and not mask.all():
+            curved_img_filled = maximum_filter(
+                np.where(mask, -1024.0, curved_img), size=3
+            )
+            curved_img[mask] = curved_img_filled[mask]
+
+        return curved_img
 
     def _refresh_cs(self) -> None:
         """Backward-compatible alias for _refresh_all_cs."""

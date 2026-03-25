@@ -23,6 +23,7 @@ DEFAULT_PCAT_SCALE = 3.0  # x mean vessel radius
 VOI_MODE = "crisp"  # "crisp" (fixed 1mm+3mm) or "scaled" (pcat_scale × r_eq)
 CRISP_GAP_MM = 1.0   # gap from outer vessel wall
 CRISP_RING_MM = 3.0   # ring width
+N_ANGULAR_SECTORS = 8          # octants for asymmetry analysis
 
 # CT display defaults (vascular window for coronary artery work)
 DEFAULT_WINDOW_WIDTH = 800
@@ -31,20 +32,18 @@ DEFAULT_WINDOW_LEVEL = 200
 # Pipeline stages (ordered)
 PIPELINE_STAGES = [
     "import",
-    "seeds",
-    "centerlines",
-    "contours",
-    "pcat_voi",
-    "statistics",
+    "seeds",          # manual ostium placement (no auto)
+    "centerlines",    # FMM + vesselness auto-trace
+    "pcat_voi",       # tubular VOI (CRISP-CT or N×radius)
+    "statistics",     # FAI + angular asymmetry
 ]
 
 STAGE_LABELS = {
     "import": "Loading volume",
-    "seeds": "Detecting seeds (TotalSegmentator)",
-    "centerlines": "Extracting centerlines",
-    "contours": "Extracting vessel contours",
+    "seeds": "Manual seed placement",
+    "centerlines": "Fitting centerlines (spline through seeds)",
     "pcat_voi": "Building PCAT VOI",
-    "statistics": "Computing FAI statistics",
+    "statistics": "Computing FAI + angular asymmetry",
 }
 
 # Paths

@@ -75,16 +75,17 @@ class TestVesselnessRemoval:
     def test_config_and_model_stages_match(self):
         assert PIPELINE_STAGES == MODEL_STAGES
 
-    def test_stage_count_is_six(self):
-        assert len(PIPELINE_STAGES) == 6
+    def test_stage_count_is_five(self):
+        assert len(PIPELINE_STAGES) == 5
 
     def test_stage_order(self):
-        expected = ["import", "seeds", "centerlines", "contours", "pcat_voi", "statistics"]
+        expected = ["import", "seeds", "centerlines", "pcat_voi", "statistics"]
         assert PIPELINE_STAGES == expected
 
     def test_new_session_has_no_vesselness(self, session):
         assert "vesselness" not in session.stage_status
-        assert len(session.stage_status) == 6
+        assert "contours" not in session.stage_status
+        assert len(session.stage_status) == 5
 
     def test_backward_compat_old_session_json(self, tmp_session_dir):
         """Loading a session.json with vesselness should silently drop it."""
@@ -156,7 +157,7 @@ class TestResumeStage:
 
     def test_resume_chain_full(self, session):
         """Step through all stages one by one."""
-        expected_chain = ["seeds", "centerlines", "contours", "pcat_voi", "statistics", None]
+        expected_chain = ["seeds", "centerlines", "pcat_voi", "statistics", None]
         for i, expected_next in enumerate(expected_chain):
             if i > 0:
                 session.stage_status[MODEL_STAGES[i]] = "complete"
@@ -427,11 +428,10 @@ class TestProgressPanel:
         panel.set_running(True)
         assert panel._run_next_btn.isEnabled() is False
 
-    def test_set_running_changes_vessel_group_title(self, panel):
+    def test_set_running_hides_vessel_group(self, panel):
         panel.set_running(True)
-        assert panel._vessel_group.title() == "Progress"
-        panel.set_running(False)
-        assert panel._vessel_group.title() == "Vessel Summary"
+        assert panel._vessel_group.isVisible() is False
+        assert panel._run_next_btn.isEnabled() is False
 
     def test_clear_vessel_summary(self, panel):
         panel.set_vessel_summary({
@@ -526,7 +526,7 @@ class TestDICOMIntegration:
         session.set_stage_status("import", "complete")
 
         # Step through all stages
-        expected = ["seeds", "centerlines", "contours", "pcat_voi", "statistics"]
+        expected = ["seeds", "centerlines", "pcat_voi", "statistics"]
         for expected_next in expected:
             assert session.get_resume_stage() == expected_next
             session.set_stage_status(expected_next, "complete")

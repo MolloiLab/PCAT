@@ -324,11 +324,22 @@ class VTKSliceView(QWidget):
         pass
 
     def _on_ctrl_scroll(self, direction: int) -> None:
-        factor = 1.1 if direction > 0 else 0.9
-        self._vtk_renderer.GetActiveCamera().Zoom(factor)
+        """Zoom toward/away from cursor position. Clamp at fit-to-window."""
+        cam = self._vtk_renderer.GetActiveCamera()
+        old_scale = cam.GetParallelScale()
+
+        factor = 1.15 if direction > 0 else 1 / 1.15
+
+        # Don't zoom out past the fit-to-window scale
+        new_scale = old_scale / factor
+        if hasattr(self, "_fit_scale") and new_scale > self._fit_scale:
+            new_scale = self._fit_scale
+
+        cam.SetParallelScale(new_scale)
+
+        self._vtk_renderer.ResetCameraClippingRange()
         self._render()
-        scale = self._vtk_renderer.GetActiveCamera().GetParallelScale()
-        self.zoom_changed.emit(scale)
+        self.zoom_changed.emit(new_scale)
 
     def set_parallel_scale(self, scale: float) -> None:
         """Set camera parallel scale without emitting zoom_changed signal."""
@@ -988,7 +999,9 @@ class VTKSliceView(QWidget):
         # Pick whichever dimension is the limiting factor.
         scale_by_height = half_h
         scale_by_width = half_w / aspect
-        cam.SetParallelScale(max(scale_by_height, scale_by_width))
+        fit_scale = max(scale_by_height, scale_by_width)
+        cam.SetParallelScale(fit_scale)
+        self._fit_scale = fit_scale  # minimum zoom (can't zoom out past this)
 
         self._vtk_renderer.ResetCameraClippingRange()
         self._render()

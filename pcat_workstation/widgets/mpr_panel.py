@@ -24,7 +24,7 @@ class MPRPanel(QWidget):
         self._linking = False
         self._volume = None
         self._spacing = None
-        self._contour_results: dict = {}  # legacy, kept for backward compat
+        self._contour_results: dict = {}  # unused, kept for clear_cpr()
         self._build_ui()
         self._connect_signals()
 
@@ -189,15 +189,6 @@ class MPRPanel(QWidget):
     def set_voi_overlay(self, voi_masks_dict: dict, spacing: list) -> None:
         for viewer in (self._axial, self._coronal, self._sagittal):
             viewer.set_voi_overlay(voi_masks_dict, spacing)
-
-    def set_contour_data(self, contour_results_dict: dict) -> None:
-        """Store ContourResult objects and pass to CPR view for cross-section rendering."""
-        self._contour_results = contour_results_dict
-        if self._volume is not None and self._spacing is not None:
-            for vessel, cr in contour_results_dict.items():
-                self._cpr_view.set_contour_data(
-                    vessel, cr, self._volume, self._spacing,
-                )
 
     def set_cpr_data(self, vessel: str, cpr_image: np.ndarray, row_extent_mm: float = 25.0) -> None:
         """Store a CPR image for a vessel in the CPR view."""

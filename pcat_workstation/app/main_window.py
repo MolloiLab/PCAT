@@ -665,10 +665,10 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_centerlines_ready(self, centerlines_dict: dict) -> None:
-        meta = self._session.get_meta() if self._session else None
-        if meta:
-            self._mpr_panel.set_centerline_overlay(centerlines_dict, meta["spacing_mm"])
-            self._save_overlays(centerlines=centerlines_dict)
+        # Centerlines are drawn by the OverlayPainter via SeedEditor.
+        # Just save the overlay data for session restoration.
+        self._save_overlays(centerlines=centerlines_dict)
+        self._mpr_panel.refresh_overlays()
 
     @Slot(object)
     def _on_voi_masks_ready(self, voi_masks_dict: dict) -> None:
@@ -1076,9 +1076,8 @@ class MainWindow(QMainWindow):
                             self._seed_editor.recompute_centerline(v)
                         self._mpr_panel.refresh_overlays()
 
-            # Centerlines
-            if "centerlines" in data:
-                self._mpr_panel.set_centerline_overlay(data["centerlines"].item(), spacing)
+            # Centerlines — loaded into SeedEditor above, drawn by OverlayPainter
+            # (no separate set_centerline_overlay call needed)
 
             # CPR images
             if "cpr_images" in data:

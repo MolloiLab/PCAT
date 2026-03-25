@@ -270,13 +270,15 @@ class VTKSliceView(QWidget):
         self._vtk_widget = _SafeVTKWidget(self)
         layout.addWidget(self._vtk_widget, stretch=1)
 
-        # QPainter overlay for seeds/centerlines (sits on top of VTK widget)
-        self._overlay = OverlayPainter(self)
+        # QPainter overlay: child of _vtk_widget so WA_TransparentForMouseEvents
+        # propagates wheel/mouse events to the VTK widget (not to VTKSliceView).
+        self._overlay = OverlayPainter(self._vtk_widget)
         self._overlay.raise_()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._overlay.setGeometry(self._vtk_widget.geometry())
+        # Overlay fills the entire VTK widget area
+        self._overlay.resize(self._vtk_widget.size())
 
     # ── VTK pipeline ────────────────────────────────────────────────
 

@@ -149,23 +149,27 @@ class AnalysisDashboard(QWidget):
         self._collapsed = collapsed
         self._content.setVisible(not collapsed)
         self._toggle_btn.setText("\u25b2" if collapsed else "\u25bc")
-        h = 36 if collapsed else self._EXPANDED_HEIGHT
-        self.setFixedHeight(h)
-        # Force the parent splitter to recompute sizes and repaint.
-        # QSplitter caches child sizes — need to poke it to update.
-        from PySide6.QtWidgets import QApplication, QSplitter
+
+        # Set size constraints
+        if collapsed:
+            self.setMinimumHeight(36)
+            self.setMaximumHeight(36)
+        else:
+            self.setMinimumHeight(self._EXPANDED_HEIGHT)
+            self.setMaximumHeight(16777215)  # QWIDGETSIZE_MAX
+
+        # Force parent QSplitter to respect the new size
+        from PySide6.QtWidgets import QSplitter
         p = self.parentWidget()
         while p is not None:
             if isinstance(p, QSplitter):
-                # Recalculate splitter sizes
-                sizes = p.sizes()
-                p.setSizes(sizes)
+                total = sum(p.sizes())
+                if collapsed:
+                    p.setSizes([total - 36, 36])
+                else:
+                    p.setSizes([total - self._EXPANDED_HEIGHT, self._EXPANDED_HEIGHT])
                 break
             p = p.parentWidget()
-        QApplication.processEvents()
-        self.update()
-        if self.parentWidget():
-            self.parentWidget().update()
 
     # -- Plotting API --------------------------------------------------------
 
@@ -400,16 +404,18 @@ class AnalysisDashboard(QWidget):
             ax.text(hx, hy, f"{hu:.0f}", fontsize=7, ha="center", va="center",
                     color="white", fontweight="bold")
 
-        # Colorbar
+        # Colorbar — inset inside the plot area (bottom-left corner)
+        from matplotlib.colors import Normalize
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+        cax = inset_axes(ax, width="3%", height="40%", loc="lower left",
+                         bbox_to_anchor=(0.02, 0.05, 1, 1), bbox_transform=ax.transAxes,
+                         borderpad=0)
         import matplotlib.cm as mcm
-        import matplotlib.colors as mcolors
-        sm = mcm.ScalarMappable(cmap=fai_cmap,
-                                norm=mcolors.Normalize(vmin=_FAI_RANGE[0], vmax=_FAI_RANGE[1]))
+        sm = mcm.ScalarMappable(cmap=fai_cmap, norm=Normalize(vmin=_FAI_RANGE[0], vmax=_FAI_RANGE[1]))
         sm.set_array([])
-        cbar = canvas.fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.02,
-                                   orientation="vertical")
-        cbar.set_label("FAI (HU)", fontsize=9, color=_MPL_STYLE["text_color"])
-        cbar.set_ticks([_FAI_RANGE[0], -150, -110, -70, _FAI_RANGE[1]])
+        cbar = canvas.fig.colorbar(sm, cax=cax, orientation="vertical")
+        cbar.set_label("HU", fontsize=8, color=_MPL_STYLE["text_color"])
+        cbar.set_ticks([_FAI_RANGE[0], -110, _FAI_RANGE[1]])
         cbar.ax.tick_params(colors=_MPL_STYLE["text_color"], labelsize=7)
 
         ax.set_title(

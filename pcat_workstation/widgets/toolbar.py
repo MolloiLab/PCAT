@@ -110,29 +110,6 @@ class MainToolBar(QToolBar):
         self._run_pipeline_btn.clicked.connect(self.run_pipeline_clicked)
         self.addWidget(self._run_pipeline_btn)
 
-        # --- Run All button (full pipeline re-run) ---
-        self._run_btn = QPushButton("\u25B6\u25B6 Run All")
-        self._run_btn.setMinimumHeight(32)
-        self._run_btn.setShortcut(QKeySequence("Ctrl+Shift+R"))
-        self._run_btn.setToolTip("Run entire pipeline from scratch (Ctrl+Shift+R)")
-        self._run_btn.setStyleSheet(
-            """
-            QPushButton {
-                background-color: transparent;
-                color: #ff9f0a;
-                border: 1px solid #ff9f0a;
-                border-radius: 4px;
-                padding: 4px 16px;
-                font-size: 14pt;
-                font-weight: bold;
-            }
-            QPushButton:hover { background-color: #ff9f0a22; }
-            QPushButton:disabled { border-color: #3a3a3c; color: #636366; }
-            """
-        )
-        self._run_btn.clicked.connect(self.run_clicked)
-        self.addWidget(self._run_btn)
-
         # --- Export button ---
         self._export_btn = QPushButton("Export")
         self._export_btn.setMinimumHeight(32)
@@ -163,11 +140,11 @@ class MainToolBar(QToolBar):
             btn.setChecked(True)
 
     def set_run_enabled(self, enabled: bool) -> None:
-        """Enable or disable the run button."""
-        self._run_btn.setEnabled(enabled)
+        """Enable or disable the Run Pipeline button."""
+        self._run_pipeline_btn.setEnabled(enabled)
 
     def set_run_pipeline_enabled(self, enabled: bool) -> None:
-        """Enable or disable the Run Pipeline button."""
+        """Enable or disable the Run Pipeline button (alias)."""
         self._run_pipeline_btn.setEnabled(enabled)
 
     # ------------------------------------------------------------------ #

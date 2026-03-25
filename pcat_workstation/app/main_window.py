@@ -198,8 +198,7 @@ class MainWindow(QMainWindow):
         # Progress panel — "Run" button does next step
         self._progress_panel.run_next_clicked.connect(self._on_run_next_step)
 
-        # Toolbar — "Run All" does full pipeline
-        self._toolbar.run_clicked.connect(self._on_run_pipeline)
+        # Toolbar — "Run Pipeline" button
         self._toolbar.run_pipeline_clicked.connect(self._on_run_pipeline)
         self._toolbar.vessel_changed.connect(self._on_vessel_changed)
         self._toolbar.wl_preset_changed.connect(self._on_wl_changed)

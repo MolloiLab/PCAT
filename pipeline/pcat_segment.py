@@ -103,8 +103,53 @@ def build_tubular_voi(
     # EDT of the inverted centerline mask → each voxel's distance to nearest centerline point
     dist_mm = distance_transform_edt(~cl_mask, sampling=spacing_mm)  # mm
 
-    # VOI: voxels between inner and outer shell
-    voi_sub = (dist_mm >= inner_mm) & (dist_mm <= outer_mm)
+    # Per-point radius: for each voxel, find which centerline point is nearest
+    # and use that point's radius instead of the global mean.
+    # This makes the VOI follow the vessel's varying diameter.
+    from scipy.ndimage import distance_transform_edt as _edt
+
+    # Build per-point inner/outer using per-point radii
+    # For efficiency, use the mean-based shell as a first pass, then refine
+    # with per-point radii for the voxels near the boundary.
+    if len(radii_mm) == len(centerline_ijk):
+        # Use per-point radii: for each voxel in the subvolume, find the
+        # nearest centerline point index and use its radius.
+        from scipy.spatial import cKDTree
+        cl_mm_local = cl_local.astype(np.float64) * np.array(spacing_mm)
+        tree = cKDTree(cl_mm_local)
+
+        # Only query voxels near the tube (within max outer + margin)
+        max_r = float(np.max(radii_mm))
+        if voi_mode == "crisp":
+            max_outer_per_pt = max_r + crisp_gap_mm + crisp_ring_mm
+        else:
+            max_outer_per_pt = max_r * radius_multiplier
+        candidate = dist_mm <= max_outer_per_pt + 1.0
+
+        if candidate.any():
+            coords = np.argwhere(candidate)  # (M, 3) voxel indices
+            coords_mm = coords.astype(np.float64) * np.array(spacing_mm)
+            _, nearest_idx = tree.query(coords_mm)
+            nearest_idx = np.clip(nearest_idx, 0, len(radii_mm) - 1)
+            pt_radii = radii_mm[nearest_idx]
+
+            if voi_mode == "crisp":
+                inner_per = pt_radii + crisp_gap_mm
+                outer_per = pt_radii + crisp_gap_mm + crisp_ring_mm
+            else:
+                inner_per = pt_radii + inner_margin_mm
+                outer_per = pt_radii * radius_multiplier
+
+            d = dist_mm[candidate]
+            in_shell = (d >= inner_per) & (d <= outer_per)
+
+            voi_sub = np.zeros(sub_shape, dtype=bool)
+            voi_sub[candidate] = in_shell
+        else:
+            voi_sub = np.zeros(sub_shape, dtype=bool)
+    else:
+        # Fallback: uniform radius
+        voi_sub = (dist_mm >= inner_mm) & (dist_mm <= outer_mm)
 
     # Map back to full volume
     voi_full = np.zeros(volume_shape, dtype=bool)

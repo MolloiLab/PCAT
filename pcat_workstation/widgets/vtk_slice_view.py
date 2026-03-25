@@ -869,9 +869,9 @@ class VTKSliceView(QWidget):
         # Build RGBA image (4 components) — subtle tint, Horos style
         rgba = np.zeros((nz, ny, nx, 4), dtype=np.uint8)
         color_map = {
-            1: (255, 180, 50, 128),  # LAD — warm yellow-orange, visible
-            2: (100, 170, 240, 128), # LCx — blue, visible
-            3: (80, 220, 140, 128),  # RCA — green, visible
+            1: (255, 180, 50, 70),   # LAD — warm yellow-orange, semi-transparent
+            2: (100, 170, 240, 70),  # LCx — blue
+            3: (80, 220, 140, 70),   # RCA — green
         }
         for vid, color in color_map.items():
             mask = combined == vid

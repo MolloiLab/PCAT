@@ -35,7 +35,7 @@ class _ChartCanvas(FigureCanvasQTAgg):
     """Matplotlib canvas pre-configured with Craft theme styling."""
 
     def __init__(self, parent=None):
-        self.fig = Figure(figsize=(6, 2.4), dpi=100)
+        self.fig = Figure(figsize=(6, 3.5), dpi=100)
         self.fig.set_facecolor(_MPL_STYLE["facecolor"])
         self.ax = self.fig.add_subplot(111)
         self._apply_theme()
@@ -87,7 +87,7 @@ class _PolarChartCanvas(FigureCanvasQTAgg):
 class AnalysisDashboard(QWidget):
     """Collapsible bottom panel with HU histogram and radial profile charts."""
 
-    _EXPANDED_HEIGHT = 300
+    _EXPANDED_HEIGHT = 420
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -146,9 +146,14 @@ class AnalysisDashboard(QWidget):
         self._content.setVisible(not collapsed)
         self._toggle_btn.setText("\u25b2" if collapsed else "\u25bc")
         if collapsed:
-            self.setFixedHeight(36)
+            self.setMinimumHeight(36)
+            self.setMaximumHeight(36)
         else:
-            self.setFixedHeight(self._EXPANDED_HEIGHT)
+            self.setMinimumHeight(self._EXPANDED_HEIGHT)
+            self.setMaximumHeight(self._EXPANDED_HEIGHT)
+        # Force parent layout to recalculate — prevents ghosting
+        if self.parentWidget():
+            self.parentWidget().updateGeometry()
 
     # -- Plotting API --------------------------------------------------------
 

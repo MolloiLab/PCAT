@@ -70,7 +70,7 @@ class MainToolBar(QToolBar):
 
         # --- Editing hints ---
         self._hint_label = QLabel(
-            "Click: navigate | Drag seed: move | Enter: add | Backspace: delete | Ctrl+Z: undo"
+            "Click: place ostium | Enter: insert waypoint | \u2190\u2192: select seed | Drag: move | Backspace: delete | Ctrl+Z: undo"
         )
         self._hint_label.setStyleSheet(
             "color: #636366; font-size: 10pt; padding: 0 8px; background: transparent;"

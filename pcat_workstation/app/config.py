@@ -32,18 +32,18 @@ DEFAULT_WINDOW_LEVEL = 200
 # Pipeline stages (ordered)
 PIPELINE_STAGES = [
     "import",
-    "seeds",          # manual ostium placement (no auto)
-    "centerlines",    # FMM + vesselness auto-trace
+    "seeds",          # manual ostium + waypoint placement
+    "centerlines",    # spline through seeds (live CPR preview)
     "pcat_voi",       # tubular VOI (CRISP-CT or N×radius)
     "statistics",     # FAI + angular asymmetry
 ]
 
 STAGE_LABELS = {
-    "import": "Loading volume",
-    "seeds": "Manual seed placement",
-    "centerlines": "Fitting centerlines (spline through seeds)",
-    "pcat_voi": "Building PCAT VOI",
-    "statistics": "Computing FAI + angular asymmetry",
+    "import": "Import DICOM volume",
+    "seeds": "Place ostium + waypoints (click, Enter, ←→)",
+    "centerlines": "Fit centerlines + estimate radii",
+    "pcat_voi": "Build pericoronary VOI",
+    "statistics": "Compute FAI + angular asymmetry",
 }
 
 # Paths

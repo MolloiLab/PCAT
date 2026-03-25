@@ -155,22 +155,19 @@ class SeedEditController(QObject):
             voxel.tolist(),
         )
 
-        # Update actor positions on all views for responsiveness
-        for v in self._views:
-            v.update_single_seed_position(
-                self._drag_vessel,
-                self._drag_type,
-                self._drag_index,
-                world,
-            )
+        # Recompute spline during drag (centerline follows seed).
+        # emit=False: don't trigger CPR regen on every drag pixel.
+        self._state.recompute_centerline(self._drag_vessel, emit=False)
+        self.refresh_all_views()
 
     def on_left_release(
         self, view: VTKSliceView, qt_x: int, qt_y: int
     ) -> None:
-        """Handle left mouse release: recompute centerline and refresh."""
+        """Handle left mouse release: emit signals to trigger CPR regeneration."""
         if self._dragging and self._drag_vessel:
-            # Now that drag is done, recompute centerline and emit signals
-            self._state.recompute_centerline(self._drag_vessel)
+            # Centerline was already updated during drag. Now emit signals
+            # so CPR regenerates (only on release, not every drag pixel).
+            self._state.centerline_changed.emit(self._drag_vessel)
             self._state.seeds_changed.emit(self._drag_vessel)
             self._state.push_history()
             self.refresh_all_views()

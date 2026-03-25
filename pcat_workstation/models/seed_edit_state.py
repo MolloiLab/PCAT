@@ -26,6 +26,9 @@ def _fit_spline_centerline(
 ) -> Optional[np.ndarray]:
     """Fit a cubic spline through seed points and sample densely.
 
+    Uses centripetal parameterization (t_i = cumulative sqrt-distance)
+    which reduces overshoot compared to chord-length parameterization.
+
     Parameters
     ----------
     seeds_ijk : list of [z, y, x] seed points in voxel coordinates.
@@ -51,20 +54,25 @@ def _fit_spline_centerline(
     if len(pts_mm) < 2:
         return None
 
+    # Centripetal parameterization: t_i = cumsum(|seg|^0.5)
+    # This reduces overshoot vs chord-length (cumsum(|seg|)).
     seg = np.linalg.norm(np.diff(pts_mm, axis=0), axis=1)
-    arc = np.concatenate([[0.0], np.cumsum(seg)])
-    total = arc[-1]
+    t = np.concatenate([[0.0], np.cumsum(np.sqrt(seg))])
+    total_t = t[-1]
 
-    if total < 1e-6:
+    if total_t < 1e-6:
         return None
 
-    if len(pts_mm) >= 3:
-        cs = CubicSpline(arc, pts_mm, bc_type="not-a-knot")
-    else:
-        cs = CubicSpline(arc, pts_mm, bc_type="natural")
+    # Total arc-length for sampling density
+    total_arc = np.sum(seg)
+    n_out = max(10, int(total_arc / step_mm))
 
-    n_out = max(10, int(total / step_mm))
-    s_vals = np.linspace(0, total, n_out)
+    if len(pts_mm) >= 3:
+        cs = CubicSpline(t, pts_mm, bc_type="not-a-knot")
+    else:
+        cs = CubicSpline(t, pts_mm, bc_type="natural")
+
+    s_vals = np.linspace(0, total_t, n_out)
     dense_mm = cs(s_vals)
 
     dense_ijk = dense_mm / np.array(spacing_mm)
@@ -221,25 +229,35 @@ class SeedEditState(QObject):
     def add_waypoint(self, vessel: str, pos_ijk: list) -> None:
         """Insert a waypoint after the selected seed (or append at end).
 
-        Matches the old seed_editor behavior: if a seed is selected,
-        the new waypoint is inserted right after it in the list.
+        After insertion, the selection advances to the new waypoint so
+        the next Enter inserts after it (matching Horos/old seed_editor).
+
+        Example: ostium → p1 → [p2 selected] → p3
+        Enter → ostium → p1 → p2 → [NEW selected] → p3
         """
         self.push_history()
         wps = self.seeds[vessel]["waypoints"]
         has_ostium = self.seeds[vessel]["ostium"] is not None
 
-        if (self._selected_vessel == vessel
-                and self.selected_idx is not None
-                and self.selected_idx >= 0):
+        if self._selected_vessel == vessel and self._selected_type == "waypoint" and self.selected_idx is not None:
             # Insert after the selected waypoint
             insert_idx = self.selected_idx + 1
             insert_idx = max(0, min(insert_idx, len(wps)))
             wps.insert(insert_idx, list(pos_ijk))
+            # Advance selection to the newly inserted waypoint
+            self.selected_idx = insert_idx
         elif self._selected_vessel == vessel and self._selected_type == "ostium":
             # Selected the ostium → insert as first waypoint
             wps.insert(0, list(pos_ijk))
+            # Select the new waypoint
+            self._selected_type = "waypoint"
+            self.selected_idx = 0
         else:
             wps.append(list(pos_ijk))
+            # Select the new waypoint
+            self._selected_vessel = vessel
+            self._selected_type = "waypoint"
+            self.selected_idx = len(wps) - 1
 
         self.recompute_centerline(vessel)
         self.seeds_changed.emit(vessel)
@@ -326,17 +344,20 @@ class SeedEditState(QObject):
     # Centerline fitting
     # ------------------------------------------------------------------
 
-    def recompute_centerline(self, vessel: str) -> None:
+    def recompute_centerline(self, vessel: str, emit: bool = True) -> None:
         """Refit the spline centerline for *vessel* from its seeds.
 
-        This is a visual guide through the seed points. The real
-        anatomy-aware centerline (FMM + vesselness) is computed when the
-        pipeline runs.
+        Parameters
+        ----------
+        vessel : vessel name
+        emit   : if True, emit centerline_changed signal (triggers CPR regen).
+                 Set False during drag to avoid expensive CPR updates.
         """
         entry = self.seeds.get(vessel)
         if entry is None:
             self.centerlines[vessel] = None
-            self.centerline_changed.emit(vessel)
+            if emit:
+                self.centerline_changed.emit(vessel)
             return
 
         ordered: List[list] = []
@@ -347,7 +368,8 @@ class SeedEditState(QObject):
         self.centerlines[vessel] = _fit_spline_centerline(
             ordered, self.spacing_mm, self.volume_shape
         )
-        self.centerline_changed.emit(vessel)
+        if emit:
+            self.centerline_changed.emit(vessel)
 
     def _recompute_all_centerlines(self) -> None:
         """Recompute centerlines for every vessel."""

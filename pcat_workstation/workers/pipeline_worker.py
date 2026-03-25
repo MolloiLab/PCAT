@@ -207,7 +207,7 @@ class PipelineWorker(QThread):
             self.stage_completed.emit("import", time.time() - t0)
 
         # ── Stage: seeds ─────────────────────────────────────────────
-        # Seeds come from user interaction (SeedEditState), not auto-generation.
+        # Seeds come from user interaction (SeedEditor), not auto-generation.
         # This stage validates that seeds exist in the session.
         if not self._should_skip("seeds"):
             t0 = time.time()
@@ -215,7 +215,7 @@ class PipelineWorker(QThread):
             self.session.set_stage_status("seeds", "running")
             try:
                 seeds_data = self.session.seeds_data
-                # SeedEditState saves as {"flat": {...}, "extended": {...}}
+                # SeedEditor saves as {"flat": {...}, "extended": {...}}
                 # Extract the extended format if present
                 if isinstance(seeds_data, dict) and "extended" in seeds_data:
                     seeds_data = seeds_data["extended"]
@@ -301,7 +301,7 @@ class PipelineWorker(QThread):
             self.stage_started.emit("centerlines")
             self.session.set_stage_status("centerlines", "running")
             try:
-                from pcat_workstation.models.seed_edit_state import _fit_spline_centerline
+                from pcat_workstation.models.seed_editor import _fit_spline_centerline
 
                 for vessel in self.vessels:
                     if vessel not in self._seed_points:

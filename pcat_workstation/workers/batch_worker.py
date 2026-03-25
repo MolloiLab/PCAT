@@ -70,7 +70,7 @@ class BatchWorker(QThread):
             clip_centerline_by_arclength,
             estimate_vessel_radii,
         )
-        from pcat_workstation.models.seed_edit_state import _fit_spline_centerline
+        from pcat_workstation.models.seed_editor import _fit_spline_centerline
         from pipeline.pcat_segment import build_tubular_voi, compute_pcat_stats
         from pcat_workstation.app.config import (
             CRISP_GAP_MM,

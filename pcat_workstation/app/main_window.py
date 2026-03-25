@@ -22,8 +22,7 @@ from pcat_workstation.workers.dicom_loader_worker import DicomLoaderWorker
 from pcat_workstation.workers.cpr_worker import CPRWorker
 from pcat_workstation.models.patient_session import PatientSession
 from pcat_workstation.models.dicom_index import DicomIndex
-from pcat_workstation.models.seed_edit_state import SeedEditState
-from pcat_workstation.controllers.seed_edit_controller import SeedEditController
+from pcat_workstation.models.seed_editor import SeedEditor
 from pcat_workstation.app.config import DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_LEVEL
 
 
@@ -42,8 +41,7 @@ class MainWindow(QMainWindow):
         self._current_vessel: str = "LAD"
         self._pipeline_worker: Optional[PipelineWorker] = None
         self._loader_worker: Optional[DicomLoaderWorker] = None
-        self._edit_state: Optional[SeedEditState] = None
-        self._edit_controller: Optional[SeedEditController] = None
+        self._seed_editor: Optional[SeedEditor] = None
         self._cpr_worker: Optional[CPRWorker] = None
         self._analysis_cache: dict = {}  # {vessel: {"hu_values":..., "distances_mm":..., "mean_hu":..., "octants":...}}
 
@@ -290,9 +288,7 @@ class MainWindow(QMainWindow):
         self._mpr_panel.clear_overlays()
         self._mpr_panel.clear_cpr()
         self._mpr_panel._cpr_view.enable_fai_overlay(False)
-        self._mpr_panel.set_edit_mode(False)
-        self._edit_state = None
-        self._edit_controller = None
+        self._seed_editor = None
         self._progress_panel.reset_stages()
         self._progress_panel.clear_vessel_summary()
         self._progress_panel.clear_progress()
@@ -349,12 +345,7 @@ class MainWindow(QMainWindow):
         # Auto-enable seed editing so the user can place ostium seeds.
         # In the new pipeline, seeds are placed manually (no TotalSegmentator).
         if volume is not None and meta is not None:
-            from pcat_workstation.app.config import VESSEL_CONFIGS
-            empty_seeds = {
-                v: {"ostium": None, "waypoints": []}
-                for v in VESSEL_CONFIGS
-            }
-            self._enable_seed_editing(empty_seeds, spacing, volume.shape)
+            self._enable_seed_editing(spacing, volume.shape)
 
         # Initialize CPR vessel so it can receive pipeline data
         self._mpr_panel.set_cpr_vessel(self._current_vessel)
@@ -467,10 +458,10 @@ class MainWindow(QMainWindow):
         ):
             return  # Already running
 
-        # Save current seeds from edit state into the session so the
+        # Save current seeds from editor into the session so the
         # pipeline worker can read them.
-        if self._edit_state is not None:
-            self._edit_state.save_to_session(self._session)
+        if self._seed_editor is not None:
+            self._seed_editor.save_to_session(self._session)
 
         # If all stages are "complete" but results are missing/empty,
         # or if user explicitly re-runs, reset and start fresh.
@@ -511,17 +502,17 @@ class MainWindow(QMainWindow):
         ):
             return
 
-        # Save seeds from edit state so the pipeline can read them
-        if self._edit_state is not None:
-            self._edit_state.save_to_session(self._session)
+        # Save seeds from editor so the pipeline can read them
+        if self._seed_editor is not None:
+            self._seed_editor.save_to_session(self._session)
 
         # If the next stage is "seeds" and we have placed seeds,
         # mark seeds as complete so we can advance to centerlines.
         next_stage = self._session.get_resume_stage()
-        if next_stage == "seeds" and self._edit_state is not None:
+        if next_stage == "seeds" and self._seed_editor is not None:
             has_any_ostium = any(
-                entry.get("ostium") is not None
-                for entry in self._edit_state.seeds.values()
+                self._seed_editor.seeds[v]["ostium"] is not None
+                for v in self._seed_editor.seeds
             )
             if has_any_ostium:
                 self._session.set_stage_status("seeds", "complete")
@@ -643,22 +634,22 @@ class MainWindow(QMainWindow):
         spacing = meta["spacing_mm"]
         volume = self._session.get_volume()
 
-        # Convert to flat format for basic overlay (backward compat)
-        flat_seeds = {}
-        for v, data in seeds_dict.items():
-            if isinstance(data, dict):
-                flat_seeds[v] = data["ostium"]
-            else:
-                flat_seeds[v] = data
-
         # Save full format
         self._save_overlays(seeds=seeds_dict)
 
         # Auto-enable edit mode with extended seed display
         if volume is not None:
-            self._enable_seed_editing(seeds_dict, spacing, volume.shape)
-        else:
-            self._mpr_panel.set_seed_overlay(flat_seeds, spacing)
+            self._enable_seed_editing(spacing, volume.shape)
+            # Load the pipeline-provided seeds into the editor
+            if self._seed_editor is not None:
+                for vessel, entry in seeds_dict.items():
+                    if vessel in self._seed_editor.seeds and isinstance(entry, dict):
+                        self._seed_editor.seeds[vessel] = {
+                            "ostium": entry.get("ostium"),
+                            "waypoints": list(entry.get("waypoints", [])),
+                        }
+                        self._seed_editor.recompute_centerline(vessel)
+                self._mpr_panel.refresh_overlays()
 
     @Slot(object)
     def _on_centerlines_ready(self, centerlines_dict: dict) -> None:
@@ -716,18 +707,18 @@ class MainWindow(QMainWindow):
         self._current_vessel = vessel
         self._mpr_panel.set_cpr_vessel(vessel)
 
-        # Sync edit state and navigate to vessel's ostium
-        if self._edit_state is not None:
-            self._edit_state.current_vessel = vessel
-            entry = self._edit_state.seeds.get(vessel)
-            if entry and entry.get("ostium"):
-                ijk = entry["ostium"]
+        # Sync editor and navigate to vessel's ostium
+        if self._seed_editor is not None:
+            self._seed_editor.current_vessel = vessel
+            entry = self._seed_editor.seeds.get(vessel, {})
+            ostium = entry.get("ostium")
+            if ostium:
                 meta = self._session.get_meta() if self._session else None
                 if meta:
                     spacing = meta["spacing_mm"]
-                    x_mm = float(ijk[2]) * spacing[2]
-                    y_mm = float(ijk[1]) * spacing[1]
-                    z_mm = float(ijk[0]) * spacing[0]
+                    x_mm = float(ostium[2]) * spacing[2]
+                    y_mm = float(ostium[1]) * spacing[1]
+                    z_mm = float(ostium[0]) * spacing[0]
                     viewers = self._mpr_panel.get_viewers()
                     for view in viewers.values():
                         view.set_crosshair(x_mm, y_mm, z_mm)
@@ -773,8 +764,7 @@ class MainWindow(QMainWindow):
             self._progress_panel.reset_stages()
             self._progress_panel.clear_vessel_summary()
             self._progress_panel.clear_progress()
-            self._edit_state = None
-            self._edit_controller = None
+            self._seed_editor = None
             self._session = None
             self._central_stack.setCurrentIndex(0)
             self.statusBar().showMessage("Session removed")
@@ -857,13 +847,23 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_save_path(self) -> None:
         """Save current seeds/centerlines to a JSON file."""
-        if self._edit_state is None:
+        if self._seed_editor is None:
             self.statusBar().showMessage("No seeds to save")
             return
+        import json as _json
+        import copy as _copy
         from PySide6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getSaveFileName(self, "Save Path", "", "JSON (*.json)")
         if path:
-            self._edit_state.export_path(path)
+            data = {
+                "seeds": _copy.deepcopy(self._seed_editor.seeds),
+                "centerlines": {
+                    v: cl.tolist() if cl is not None else None
+                    for v, cl in self._seed_editor.centerlines.items()
+                },
+                "current_vessel": self._seed_editor.current_vessel,
+            }
+            Path(path).write_text(_json.dumps(data, indent=2))
             self.statusBar().showMessage(f"Path saved: {path}")
 
     @Slot()
@@ -871,6 +871,7 @@ class MainWindow(QMainWindow):
         """Load seeds/centerlines from a JSON file."""
         if self._session is None:
             return
+        import json as _json
         from PySide6.QtWidgets import QFileDialog
         path, _ = QFileDialog.getOpenFileName(self, "Load Path", "", "JSON (*.json)")
         if not path:
@@ -878,9 +879,19 @@ class MainWindow(QMainWindow):
         meta = self._session.get_meta()
         volume = self._session.get_volume()
         if meta and volume is not None:
-            from pcat_workstation.models.seed_edit_state import SeedEditState
-            state = SeedEditState.import_path(path, meta["spacing_mm"], volume.shape)
-            self._enable_seed_editing(state.seeds, meta["spacing_mm"], volume.shape)
+            self._enable_seed_editing(meta["spacing_mm"], volume.shape)
+            if self._seed_editor is not None:
+                data = _json.loads(Path(path).read_text())
+                for vessel, entry in data.get("seeds", {}).items():
+                    if vessel in self._seed_editor.seeds and isinstance(entry, dict):
+                        self._seed_editor.seeds[vessel] = {
+                            "ostium": entry.get("ostium"),
+                            "waypoints": list(entry.get("waypoints", [])),
+                        }
+                self._seed_editor.current_vessel = data.get("current_vessel", self._current_vessel)
+                for vessel in self._seed_editor.seeds:
+                    self._seed_editor.recompute_centerline(vessel)
+                self._mpr_panel.refresh_overlays()
             self.statusBar().showMessage(f"Path loaded: {path}")
 
     @Slot()
@@ -915,64 +926,48 @@ class MainWindow(QMainWindow):
             if parent_dock:
                 parent_dock.setVisible(not parent_dock.isVisible())
 
-    def _enable_seed_editing(self, seeds_dict: dict, spacing: list, volume_shape: tuple) -> None:
-        """Set up SeedEditState + Controller for interactive seed editing."""
-        # Clean up any existing edit state and disconnect old signals
-        if self._edit_state is not None:
-            self._edit_state.save_to_session(self._session)
-        if self._edit_controller is not None:
-            try:
-                self._edit_controller.request_pipeline_rerun.disconnect(self._on_edit_rerun)
-            except RuntimeError:
-                pass
+    def _enable_seed_editing(self, spacing: list, volume_shape: tuple) -> None:
+        """Create SeedEditor and wire it into MPR views."""
+        from pcat_workstation.app.config import VESSEL_CONFIGS
 
-        self._edit_state = SeedEditState(seeds_dict, spacing, volume_shape)
+        # Save existing seeds before replacing
+        if self._seed_editor is not None and self._session is not None:
+            self._seed_editor.save_to_session(self._session)
 
-        viewers = self._mpr_panel.get_viewers()
-        self._edit_controller = SeedEditController(
-            state=self._edit_state,
-            views=list(viewers.values()),
-            spacing=spacing,
+        self._seed_editor = SeedEditor(
+            spacing_mm=spacing,
+            volume_shape=volume_shape,
+            vessel_names=list(VESSEL_CONFIGS.keys()),
         )
-        self._edit_controller.request_pipeline_rerun.connect(self._on_edit_rerun)
-        self._edit_controller.save_requested.connect(self._on_save_seeds)
+        self._seed_editor.current_vessel = self._current_vessel
 
-        self._mpr_panel.set_edit_controller(self._edit_controller)
-        self._mpr_panel.set_edit_mode(True)
-        self._mpr_panel.refresh_seed_overlay(self._edit_state)
+        # Wire to MPR views (handles mouse/key/overlay internally)
+        self._mpr_panel.set_seed_editor(self._seed_editor)
 
-        # Show centerlines from edit state on MPR views
-        meta = self._session.get_meta() if self._session else None
-        if meta:
-            cl_dict = {}
-            for vessel, cl in self._edit_state.centerlines.items():
-                if cl is not None:
-                    cl_dict[vessel] = cl
-            if cl_dict:
-                self._mpr_panel.set_centerline_overlay(cl_dict, meta["spacing_mm"])
+        # Live CPR: when centerline changes, dispatch async CPR worker
+        self._seed_editor.centerline_changed.connect(self._on_centerline_changed)
 
-        # Refresh centerlines when seeds are edited
-        self._edit_state.centerline_changed.connect(self._on_edit_centerline_changed)
-        # Clear stale CPR when seeds are moved (CPR becomes outdated)
-        self._edit_state.seeds_changed.connect(self._on_seeds_edited)
+        # Save: Ctrl+S
+        self._seed_editor.save_requested.connect(self._on_save_seeds)
 
-        self.statusBar().showMessage("Seeds loaded \u2014 click to select, drag to move")
+        self.statusBar().showMessage(
+            "Click to place ostium \u2014 Enter: add waypoint \u2014 \u2190\u2192: select \u2014 Backspace: delete"
+        )
 
-    @Slot()
     @Slot()
     def _on_save_seeds(self) -> None:
         """Save seeds to session (Ctrl+S)."""
-        if self._edit_state is not None and self._session is not None:
-            self._edit_state.save_to_session(self._session)
+        if self._seed_editor is not None and self._session is not None:
+            self._seed_editor.save_to_session(self._session)
             self.statusBar().showMessage("Seeds saved")
 
     def _on_edit_rerun(self) -> None:
         """Re-run pipeline with updated seeds from edit mode."""
-        if self._edit_state is None or self._session is None:
+        if self._seed_editor is None or self._session is None:
             return
 
         # Save edited seeds
-        self._edit_state.save_to_session(self._session)
+        self._seed_editor.save_to_session(self._session)
 
         # Reset pipeline stages from centerlines onward
         for stage in ["centerlines", "pcat_voi", "statistics"]:
@@ -981,40 +976,25 @@ class MainWindow(QMainWindow):
         # Re-run pipeline (edit mode stays active; seeds_ready will refresh it)
         self._on_run_pipeline()
 
-    def _on_edit_centerline_changed(self, vessel: str) -> None:
-        """Refresh centerline overlay AND regenerate CPR live (Horos pattern).
+    def _on_centerline_changed(self, vessel: str) -> None:
+        """Centerline changed -- refresh overlays and dispatch async CPR."""
+        self._mpr_panel.refresh_overlays()
 
-        When a seed is added/moved/deleted, the spline centerline is
-        recomputed by SeedEditState.  This handler updates the MPR overlay
-        and dispatches an async CPRWorker to regenerate the CPR image.
-        """
-        if self._edit_state is None or self._session is None:
-            return
-        meta = self._session.get_meta()
-        if not meta:
+        if self._seed_editor is None or self._session is None:
             return
 
-        # 1. Refresh centerline overlay on MPR views
-        cl_dict = {}
-        for v, cl in self._edit_state.centerlines.items():
-            if cl is not None:
-                cl_dict[v] = cl
-        if cl_dict:
-            self._mpr_panel.set_centerline_overlay(cl_dict, meta["spacing_mm"])
-
-        # 2. Dispatch async CPR regeneration for this vessel
-        centerline = self._edit_state.centerlines.get(vessel)
+        centerline = self._seed_editor.centerlines.get(vessel)
         if centerline is None or len(centerline) < 10:
-            return  # too few points for a meaningful CPR
+            return
 
         volume = self._session.get_volume()
-        if volume is None:
+        meta = self._session.get_meta()
+        if volume is None or meta is None:
             return
 
-        # If a CPR worker is still running, let it finish — the new one
-        # will overwrite its result.  QThread.quit() doesn't stop run().
+        # Cancel in-flight CPR worker
         if self._cpr_worker is not None and self._cpr_worker.isRunning():
-            self._cpr_worker.wait(50)  # brief wait, non-blocking
+            self._cpr_worker.wait(50)
 
         self._cpr_worker = CPRWorker(
             vessel, volume, centerline, meta["spacing_mm"], parent=self,
@@ -1023,11 +1003,6 @@ class MainWindow(QMainWindow):
         self._cpr_worker.cpr_frame_ready.connect(self._on_cpr_frame_ready)
         self._cpr_worker.start()
         self.statusBar().showMessage(f"Updating {vessel} CPR...")
-
-    def _on_seeds_edited(self, vessel: str) -> None:
-        """Seeds were edited — CPR auto-updates via centerline_changed."""
-        # Don't clear CPR; the live CPR worker handles updates.
-        self.statusBar().showMessage("Seeds edited \u2014 updating CPR...")
 
     # ------------------------------------------------------------------ #
     #  Events
@@ -1064,18 +1039,26 @@ class MainWindow(QMainWindow):
             # Seeds (may be extended {vessel: {"ostium":..., "waypoints":...}} format)
             if "seeds" in data:
                 raw_seeds = data["seeds"].item()
-                flat_seeds = {}
-                for v, sd in raw_seeds.items():
-                    if isinstance(sd, dict):
-                        flat_seeds[v] = sd["ostium"]
-                    else:
-                        flat_seeds[v] = sd  # backward compat
                 # Auto-enable editing if volume is loaded
                 volume = self._session.get_volume() if self._session else None
                 if volume is not None:
-                    self._enable_seed_editing(raw_seeds, spacing, volume.shape)
-                else:
-                    self._mpr_panel.set_seed_overlay(flat_seeds, spacing)
+                    self._enable_seed_editing(spacing, volume.shape)
+                    if self._seed_editor is not None:
+                        for v, sd in raw_seeds.items():
+                            if v in self._seed_editor.seeds:
+                                if isinstance(sd, dict):
+                                    self._seed_editor.seeds[v] = {
+                                        "ostium": sd.get("ostium"),
+                                        "waypoints": list(sd.get("waypoints", [])),
+                                    }
+                                else:
+                                    self._seed_editor.seeds[v] = {
+                                        "ostium": list(sd) if sd is not None else None,
+                                        "waypoints": [],
+                                    }
+                        for v in self._seed_editor.seeds:
+                            self._seed_editor.recompute_centerline(v)
+                        self._mpr_panel.refresh_overlays()
 
             # Centerlines
             if "centerlines" in data:
